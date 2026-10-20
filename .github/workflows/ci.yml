@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm install
+
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Tests
+        run: npm test
+
+      - name: Shellcheck probe.sh
+        run: shellcheck -S error src/scripts/probe.sh
+
+      - name: docs/TOOLS.md is up to date
+        run: |
+          npm run docs:tools
+          git diff --exit-code docs/TOOLS.md

@@ -1,0 +1,46 @@
+{
+  "name": "mia-assist",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server and CLI for a fleet of Linux servers over ssh/Tailscale (Remnawave/Xray nodes and anything else): status, audit, drift snapshots, two-step dry-run/apply actions, runbooks, web UI",
+  "type": "module",
+  "bin": {
+    "mia": "dist/cli.js"
+  },
+  "main": "dist/cli.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && tsup",
+    "dev": "tsup --watch",
+    "start": "node dist/cli.js mcp",
+    "test": "node --import tsx --test test/*.test.ts",
+    "docs:tools": "tsx scripts/gen-tools-doc.ts"
+  },
+  "keywords": [
+    "mcp",
+    "remnawave",
+    "fleet",
+    "ssh",
+    "tailscale"
+  ],
+  "license": "MIT",
+  "author": "Alexander Kadorkin",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akadorkin/mia-assist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "yaml": "^2.8.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

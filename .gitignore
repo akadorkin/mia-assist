@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+*.log
+package-lock.json
+__pycache__/
+# the real inventory holds host names and addresses: keep it out of git
+fleet.yaml
+fleet.*.yaml
+!fleet.example.yaml

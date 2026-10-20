@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mia — флот</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #e3e6ec; --hover: #f0f3f8;
+  --accent: #2f6fed; --accent-text: #ffffff; --ok: #1f8a4c; --warn: #b7791f; --crit: #c53030; --off: #8a93a5;
+  --ok-bg: #e7f6ed; --warn-bg: #fdf3e1; --crit-bg: #fde8e8; --off-bg: #eef0f4; --shadow: 0 8px 30px rgba(20, 30, 50, .12);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418; --panel: #191d23; --text: #e6e9ef; --muted: #98a1b3; --line: #2a3039; --hover: #20252d;
+    --accent: #5b8cff; --accent-text: #0b1020; --ok: #4cc382; --warn: #e3b048; --crit: #ff6b6b; --off: #7d8698;
+    --ok-bg: #173325; --warn-bg: #3a2e14; --crit-bg: #3d1a1a; --off-bg: #232830; --shadow: 0 8px 30px rgba(0, 0, 0, .5);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 7px 12px; }
+button:hover:not(:disabled) { background: var(--hover); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+button.danger { background: var(--crit); border-color: var(--crit); color: #fff; font-weight: 600; }
+button.link { border: 0; background: none; color: var(--accent); padding: 4px 6px; }
+input, select, textarea { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+header { position: sticky; top: 0; z-index: 5; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.chip { display: inline-flex; gap: 5px; align-items: center; padding: 2px 9px; border-radius: 999px; font-size: 13px; background: var(--off-bg); color: var(--muted); white-space: nowrap; }
+.chip.ok { background: var(--ok-bg); color: var(--ok); } .chip.warn { background: var(--warn-bg); color: var(--warn); } .chip.crit { background: var(--crit-bg); color: var(--crit); }
+.grow { flex: 1; }
+.search { position: relative; }
+.search input { width: 300px; max-width: 60vw; }
+.results { position: absolute; top: 40px; right: 0; width: 420px; max-width: 90vw; max-height: 60vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); display: none; }
+.results div { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.results div:hover, .results div.on { background: var(--hover); }
+.results small { color: var(--muted); display: block; }
+main { padding: 16px 20px 110px; max-width: 1500px; margin: 0 auto; }
+.notice { background: var(--warn-bg); color: var(--warn); padding: 8px 12px; border-radius: 8px; margin-bottom: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; }
+.card h2 { font-size: 15px; margin: 0 0 10px; }
+.scroll { overflow-x: auto; }
+.suggest { display: flex; gap: 10px; flex-wrap: wrap; }
+.suggest button { text-align: left; }
+.suggest button small { display: block; color: var(--muted); font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; background: var(--panel); }
+td.num, th.num { text-align: right; }
+td.issues { white-space: normal; min-width: 220px; }
+tr.host:hover td { background: var(--hover); }
+tr.host.sel td { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+tr.host td:first-child, tr.host td:nth-child(2) { cursor: pointer; }
+.state { font-weight: 600; } .ok { color: var(--ok); } .warn { color: var(--warn); } .crit { color: var(--crit); } .off, .muted { color: var(--off); }
+.code { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 6px; margin: 1px 3px 1px 0; background: var(--warn-bg); color: var(--warn); }
+.code.crit { background: var(--crit-bg); color: var(--crit); }
+.bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; box-shadow: 0 -6px 20px rgba(0,0,0,.06); }
+.bar .who { color: var(--muted); margin-right: 6px; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(720px, 100vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: var(--shadow); z-index: 10; display: none; flex-direction: column; }
+.drawer.open { display: flex; }
+.drawer .head { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+.drawer .head h2 { margin: 0; font-size: 17px; flex: 1; }
+.drawer .body { padding: 16px 18px; overflow: auto; flex: 1; }
+.drawer .foot { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.shade { position: fixed; inset: 0; background: rgba(0,0,0,.25); z-index: 9; display: none; }
+.shade.open { display: block; }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-weight: 600; margin-bottom: 4px; }
+.field .hint { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.field input[type=text], .field input[type=number], .field input[type=password], .field select, .field textarea { width: 100%; }
+.field.inline label { display: inline; font-weight: 500; }
+details.more { margin: 8px 0 14px; } details.more summary { cursor: pointer; color: var(--accent); }
+.steps { margin: 0; padding: 0; list-style: none; }
+.steps li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.plan-head { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+.group { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.group .who { font-weight: 600; }
+.group .now { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.group .w { color: var(--warn); font-size: 13px; } .group .b { color: var(--crit); font-size: 13px; }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto; max-height: 55vh; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+.progress li { display: flex; gap: 8px; padding: 4px 0; } .progress .t { color: var(--muted); margin-left: auto; }
+.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s .8s linear infinite; vertical-align: -1px; }
+@keyframes s { to { transform: rotate(360deg); } }
+.big { font-size: 15px; padding: 10px 18px; }
+.confirm { background: var(--crit-bg); color: var(--crit); padding: 10px 12px; border-radius: 8px; margin: 10px 0; }
+.confirm input { margin-top: 6px; width: 180px; }
+.next { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.next button { text-align: left; }
+.empty { color: var(--muted); padding: 20px 0; text-align: center; }
+kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+@media (max-width: 700px) { header { padding: 10px 12px; } main { padding: 12px 12px 140px; } .search input { width: 100%; } .hide-s { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>mia</h1>
+  <div class="chips" id="summary"><span class="chip">загрузка…</span></div>
+  <div class="grow"></div>
+  <button id="refresh" class="primary">↻ Статус</button>
+  <div class="search"><input id="q" placeholder="Найти действие: апдейт, логи, днс…" autocomplete="off"><div class="results" id="found"></div></div>
+</header>
+<main>
+  <div id="notices"></div>
+  <div class="card" id="suggestCard" style="display:none"><h2>Что сделать</h2><div class="suggest" id="suggest"></div></div>
+  <div class="card scroll">
+    <table>
+      <thead><tr>
+        <th><input type="checkbox" id="all" title="выбрать все"></th><th>хост</th><th>состояние</th><th class="num hide-s">нагрузка</th><th class="num hide-s">память</th><th class="num">диск</th>
+        <th>обновления</th><th class="hide-s">ребут</th><th class="hide-s">нода</th><th class="num hide-s">серт.</th><th class="hide-s">tailscale</th><th class="hide-s">панель</th><th>проблемы</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" style="display:none"></div>
+  </div>
+  <div class="card scroll" id="extraCard" style="display:none"><h2>Устройства tailnet, которых нет в fleet.yaml</h2><div id="extra"></div></div>
+</main>
+<div class="bar" id="bar"></div>
+<div class="shade" id="shade"></div>
+<aside class="drawer" id="drawer">
+  <div class="head"><h2 id="dTitle"></h2><button class="link" id="dClose" title="закрыть (Esc)">✕</button></div>
+  <div class="body" id="dBody"></div>
+  <div class="foot" id="dFoot"></div>
+</aside>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const plural = (n, one, few, many) => (n % 10 === 1 && n % 100 !== 11 ? one : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? few : many);
+const hostsWord = (n) => n + ' ' + plural(n, 'сервер', 'сервера', 'серверов');
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? { headers: { 'X-Mia': '1' } } : { method: 'POST', headers: { 'X-Mia': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({ error: 'нет ответа' }));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+/** Run a tool as a job: progress events while it runs, the result at the end. */
+async function job(tool, args, onProgress) {
+  const { id } = await api('api/jobs', { tool, args });
+  return new Promise((resolve, reject) => {
+    const es = new EventSource('api/jobs/' + id + '/events');
+    es.addEventListener('progress', (e) => onProgress && onProgress(JSON.parse(e.data)));
+    es.addEventListener('done', (e) => { es.close(); resolve(JSON.parse(e.data)); });
+    // обрыв: EventSource переподключается сам и дочитывает пропущенное; закрыт насовсем — задачи на сервере больше нет
+    es.onerror = () => { if (es.readyState === EventSource.CLOSED) reject(new Error('задача потеряна (mia перезапускалась?) — проверьте результат в журнале, прежде чем запускать снова')); };
+  });
+}
+
+const S = { state: null, rows: new Map(), sel: new Set(), last: null, suggest: [], running: new Set() };
+const tool = (name) => S.state.tools.find((t) => t.name === name);
+const CODES = () => S.state.codes || {};
+const CRIT = new Set(['reach', 'disk.full', 'fw.missing', 'fw.inactive', 'fw.exposed', 'fw.default_in', 'fw.public_mgmt', 'ts.down', 'ssh.password', 'docker.inactive', 'node.compose', 'node.secret', 'node.container', 'svc.down', 'panel.disconnected', 'cert.expiring']);
+const RU_WARN = [
+  [/^docker packages are upgraded: all containers restart/, 'обновляется docker: все контейнеры перезапустятся'],
+  [/(\d+) user\(s\) online on (\S+) will reconnect/, '$1 польз. онлайн на $2 переподключатся'],
+  [/(\d+) user\(s\) on (\S+) will be disconnected/, '$1 польз. на $2 отключатся'],
+  [/(\d+) user\(s\) on (\S+) will reconnect/, '$1 польз. на $2 переподключатся'],
+  [/^unreachable: (.*?)( — .*)?$/, 'не отвечает: $1'],
+];
+const ru = (w) => RU_WARN.reduce((s, [a, b]) => s.replace(a, b), String(w));
+
+// ---------------------------------------------------------------- table
+function stateCell(r) {
+  if (S.running.has(r.host)) return '<span class="spin"></span> <span class="muted">опрашиваю</span>';
+  const s = r.state;
+  if (!s) return '<span class="muted">—</span>';
+  if (s === 'UNREACHABLE') return '<span class="state crit">✖ недоступен</span>';
+  if (s === 'crit') return '<span class="state crit">● крит</span>';
+  if (s === 'warn') return '<span class="state warn">● внимание</span>';
+  return '<span class="state ok">● ok</span>';
+}
+const pct = (v) => { const n = parseFloat(v); if (isNaN(n)) return ''; return '<span class="' + (n >= 90 ? 'crit' : n >= 80 ? 'warn' : '') + '">' + n + '%</span>'; };
+function issues(r) {
+  if (r.state === 'UNREACHABLE') return '<span class="crit">' + esc(String(r.error || '').split(' — ')[0]) + '</span>';
+  const codes = String(r.issues || '').split(/\s+/).filter(Boolean);
+  const count = new Map(); codes.forEach((c) => count.set(c, (count.get(c) || 0) + 1));
+  return [...count].map(([c, n]) => '<span class="code' + (CRIT.has(c) ? ' crit' : '') + '" title="' + esc(CODES()[c] || c) + '">' + esc(CODES()[c] || c) + (n > 1 ? ' ×' + n : '') + '</span>').join('');
+}
+function renderRows() {
+  const hosts = S.state.hosts.filter((h) => !h.disabled);
+  $('rows').innerHTML = hosts.map((h) => {
+    const r = S.rows.get(h.name) || { host: h.name };
+    const [upd, sec] = String(r.updates || '').split('/');
+    const load = r.load !== undefined ? r.load + (r.cpu ? '/' + r.cpu : '') : '';
+    const k = r.load !== undefined && r.cpu ? r.load / r.cpu : 0;
+    return '<tr class="host' + (S.sel.has(h.name) ? ' sel' : '') + '" data-h="' + esc(h.name) + '">' +
+      '<td><input type="checkbox" ' + (S.sel.has(h.name) ? 'checked' : '') + '></td>' +
+      '<td><b>' + esc(h.name) + '</b>' + (h.title ? ' <span>' + esc(h.title) + '</span>' : '') + '<div class="muted" style="font-size:12px">' + esc(h.roles.join(', ')) + '</div></td>' +
+      '<td>' + stateCell(r) + '</td>' +
+      '<td class="num hide-s ' + (k >= 1 ? 'crit' : k >= .7 ? 'warn' : '') + '">' + esc(load) + '</td>' +
+      '<td class="num hide-s">' + pct(r.mem) + '</td><td class="num">' + pct(r.disk) + '</td>' +
+      '<td>' + (upd ? esc(upd) + (sec ? ' <span class="warn">(' + esc(parseInt(sec)) + ' security)</span>' : '') : '') + '</td>' +
+      '<td class="hide-s">' + (r.reboot ? '<span class="warn">нужен</span>' : '') + '</td>' +
+      '<td class="hide-s">' + (r.node ? (r.node === 'running' ? '<span class="ok">✓</span>' : '<span class="crit">' + esc(r.node === 'absent' ? 'нет' : r.node) + '</span>') : '') + '</td>' +
+      '<td class="num hide-s">' + (r.cert && r.cert !== '-' ? '<span class="' + (parseInt(r.cert) < 14 ? 'crit' : parseInt(r.cert) < 30 ? 'warn' : '') + '">' + parseInt(r.cert) + ' дн</span>' : '') + '</td>' +
+      '<td class="hide-s">' + (r.ts === 'Running' ? '<span class="ok">✓</span>' + (r.tsKey ? ' <span class="warn">ключ ' + esc(r.tsKey) + '</span>' : '') : esc(r.ts || '')) + '</td>' +
+      '<td class="hide-s">' + (r.panel ? (/^connected/.test(r.panel) ? '<span class="ok">✓</span> ' + esc(String(r.panel).replace(/^connected\s*/, '').replace(/u$/, '')) : '<span class="crit">' + esc(r.panel) + '</span>') : '') + '</td>' +
+      '<td class="issues">' + issues(r) + '</td></tr>';
+  }).join('');
+  $('empty').style.display = hosts.length ? 'none' : 'block';
+  $('empty').textContent = hosts.length ? '' : 'В fleet.yaml пока нет серверов: добавьте их в терминале — mia setup.';
+  $('all').checked = hosts.length > 0 && hosts.every((h) => S.sel.has(h.name));
+  renderBar();
+}
+$('rows').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr.host'); if (!tr) return;
+  const h = tr.dataset.h;
+  if (S.sel.has(h)) S.sel.delete(h); else S.sel.add(h);
+  renderRows();
+});
+$('all').addEventListener('change', (e) => { S.sel = e.target.checked ? new Set(S.state.hosts.filter((h) => !h.disabled).map((h) => h.name)) : new Set(); renderRows(); });
+
+function renderSummary() {
+  const st = S.last;
+  const chips = [];
+  chips.push('<span class="chip">' + hostsWord(S.state.hosts.filter((h) => !h.disabled).length) + '</span>');
+  if (st) {
+    const s = st.summary;
+    chips.push('<span class="chip ok">✔ ' + (s.ok || 0) + ' ok</span>');
+    if (s.warn) chips.push('<span class="chip warn">▲ ' + s.warn + ' внимание</span>');
+    if (s.crit) chips.push('<span class="chip crit">● ' + s.crit + ' крит</span>');
+    if (s.unreachable) chips.push('<span class="chip crit">✖ ' + s.unreachable + ' недоступно</span>');
+    chips.push('<span class="chip">статус ' + new Date(st.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) + '</span>');
+  }
+  if (S.state.readonly) chips.push('<span class="chip warn">только чтение</span>');
+  if (S.state.demo) chips.push('<span class="chip crit" title="выдуманный флот: жать можно всё, настоящие серверы не трогаются">ДЕМО</span>');
+  $('summary').innerHTML = chips.join('');
+}
+function renderSuggest() {
+  $('suggestCard').style.display = S.suggest.length ? 'block' : 'none';
+  $('suggest').innerHTML = S.suggest.map((n, i) => '<button data-i="' + i + '">' + esc(n.label) + (n.hint ? '<small>' + esc(n.hint) + '</small>' : '') + '</button>').join('');
+}
+$('suggest').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) runNext(S.suggest[+b.dataset.i]); });
+
+function renderBar() {
+  const n = S.sel.size;
+  const who = n ? 'Выбрано: <b>' + n + '</b> <button class="link" id="clearSel">снять</button>' : 'Для всех серверов:';
+  $('bar').innerHTML = '<span class="who">' + who + '</span>' + S.state.quick.filter((q) => q.tool !== 'fleet_status').map((q) => '<button data-t="' + q.tool + '"' + (tool(q.tool) && !tool(q.tool).readonly ? '' : '') + '>' + esc(q.title) + '</button>').join('') + '<button data-t="__more">Ещё…</button>';
+}
+$('bar').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.id === 'clearSel') { S.sel.clear(); renderRows(); return; }
+  if (b.dataset.t === '__more') { $('q').focus(); return; }
+  if (b.dataset.t) openAction(b.dataset.t, selectionPreset(b.dataset.t));
+});
+function selectionPreset(name) {
+  const t = tool(name); if (!t) return {};
+  const names = [...S.sel];
+  const has = (f) => t.fields.some((x) => x.name === f);
+  if (names.length && has('target')) return { target: names.join(',') };
+  if (names.length === 1 && has('host')) return { host: names[0] };
+  if (!names.length && has('target') && name !== 'host_reboot') return { target: name === 'remnanode_update' ? 'role:remnanode' : 'all' };
+  return {};
+}
+
+// ---------------------------------------------------------------- status
+async function refresh() {
+  $('refresh').disabled = true;
+  S.running = new Set(S.state.hosts.filter((h) => !h.disabled).map((h) => h.name));
+  renderRows();
+  try {
+    const res = await job('fleet_status', { target: 'all', tailnet: true }, (p) => {
+      if (p.kind === 'host' && p.state !== 'run') { S.running.delete(p.host); renderRows(); }
+    });
+    S.running.clear();
+    if (!res.ok) throw new Error(res.error);
+    const d = res.data;
+    S.rows = new Map(d.rows.filter((r) => r.state !== 'not in fleet.yaml' && r.state !== 'offline').map((r) => [r.host, r]));
+    S.last = { at: Date.now(), summary: d.summary };
+    S.suggest = (res.next || []).filter((n) => n.tool !== 'fleet_audit' || true);
+    const extra = d.rows.filter((r) => r.state === 'not in fleet.yaml' || r.state === 'offline');
+    $('extraCard').style.display = extra.length ? 'block' : 'none';
+    $('extra').innerHTML = extra.length ? '<table><tr><th>устройство</th><th>сеть</th><th>ОС</th><th>что видно</th></tr>' + extra.map((r) => '<tr><td>' + esc(r.host) + '</td><td>' + (r.state === 'offline' ? '<span class="muted">не в сети</span>' : '<span class="ok">в сети</span>') + '</td><td>' + esc(r.os || '') + '</td><td>' + esc(r.error ? String(r.error).split(' — ')[0] : r.up ? 'ssh ✓ · аптайм ' + r.up : '—') + '</td></tr>').join('') + '</table><p class="muted">Добавить их в fleet.yaml: в терминале <kbd>mia setup</kbd> → «Хосты: добавить из tailnet».</p>' : '';
+    const notes = [];
+    if (S.state.demo) { /* the demo has no panel and a pretend tailnet on purpose */ }
+    else if (d.panel && /^not configured/.test(d.panel)) notes.push('Панель не подключена — состояние нод в панели не видно (mia setup → «Панель Remnawave»).');
+    else if (d.panel && !/^ok/.test(d.panel)) notes.push('Панель не ответила: ' + d.panel.replace(/^error: /, ''));
+    if (d.tailnet && /^unavailable/.test(d.tailnet)) notes.push('Tailnet не виден: ' + d.tailnet.replace(/^unavailable: /, ''));
+    showNotices(notes);
+  } catch (e) {
+    S.running.clear();
+    showNotices(['Статус не получен: ' + e.message]);
+  }
+  $('refresh').disabled = false;
+  renderSummary(); renderSuggest(); renderRows();
+}
+function showNotices(list) {
+  const m = S.state.demo ? [] : S.state.missing;
+  const demo = S.state.demo ? ['Демо: выдуманный флот из 7 серверов. Жмите что угодно, включая «Выполнить», — ничего не уходит на настоящие серверы, меняется только этот демо-флот.'] : [];
+  const base = m.length ? ['Не задано ' + m.length + ' ' + plural(m.length, 'ключ', 'ключа', 'ключей') + ' (' + m.slice(0, 3).join(', ') + (m.length > 3 ? ' …' : '') + ') — задать в терминале: mia setup'] : [];
+  $('notices').innerHTML = [...demo, ...base, ...list, ...(S.runningNotes || [])].map((n) => '<div class="notice">' + esc(n) + '</div>').join('');
+}
+$('refresh').addEventListener('click', refresh);
+
+// ---------------------------------------------------------------- search
+function searchTools(q) {
+  const f = q.trim().toLowerCase(); if (!f) return [];
+  const EN = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`", RU = 'йцукенгшщзхъфывапролджэячсмитьбюё';
+  const sw = (s, a, b) => [...s].map((c) => (a.includes(c) ? b[a.indexOf(c)] : c)).join('');
+  const alts = [f, sw(f, EN, RU), sw(f, RU, EN)];
+  return S.state.tools.filter((t) => { const text = (t.title + ' ' + t.name + ' ' + t.keywords).toLowerCase(); return alts.some((a) => text.includes(a)); }).slice(0, 12);
+}
+let foundIdx = 0;
+function renderFound() {
+  const list = searchTools($('q').value);
+  $('found').style.display = list.length ? 'block' : 'none';
+  foundIdx = Math.min(foundIdx, Math.max(0, list.length - 1));
+  $('found').innerHTML = list.map((t, i) => '<div data-t="' + t.name + '" class="' + (i === foundIdx ? 'on' : '') + '">' + esc(t.title) + (t.readonly ? '' : ' ✎') + '<small>' + esc(t.name) + '</small></div>').join('');
+  return list;
+}
+$('q').addEventListener('input', () => { foundIdx = 0; renderFound(); });
+$('q').addEventListener('keydown', (e) => {
+  const list = renderFound();
+  if (e.key === 'ArrowDown') { foundIdx = Math.min(foundIdx + 1, list.length - 1); renderFound(); e.preventDefault(); }
+  if (e.key === 'ArrowUp') { foundIdx = Math.max(foundIdx - 1, 0); renderFound(); e.preventDefault(); }
+  if (e.key === 'Enter' && list[foundIdx]) { pick(list[foundIdx].name); }
+  if (e.key === 'Escape') { $('q').value = ''; renderFound(); $('q').blur(); }
+});
+$('found').addEventListener('click', (e) => { const d = e.target.closest('div[data-t]'); if (d) pick(d.dataset.t); });
+function pick(name) { $('q').value = ''; $('found').style.display = 'none'; openAction(name, selectionPreset(name), 'form'); }
+
+// ---------------------------------------------------------------- the action panel
+const D = { tool: null, args: {}, plan: null };
+function openDrawer(title) { $('dTitle').textContent = title; $('drawer').classList.add('open'); $('shade').classList.add('open'); }
+function closeDrawer() { $('drawer').classList.remove('open'); $('shade').classList.remove('open'); D.tool = null; }
+$('dClose').addEventListener('click', closeDrawer);
+$('shade').addEventListener('click', () => { if (!D.busy) closeDrawer(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('drawer').classList.contains('open') && !D.busy) closeDrawer(); if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') { e.preventDefault(); $('q').focus(); } });
+const foot = (html) => { $('dFoot').innerHTML = html; };
+const body = (html) => { $('dBody').innerHTML = html; };
+
+/**
+ * Open an action with its defaults and what the table selection says. mode: 'auto' — straight to the plan
+ * («Дальше»); 'smart' — straight to it when nothing is missing (the buttons below the table; a reboot always
+ * shows where first); 'form' — the parameters first (search).
+ */
+function openAction(name, preset = {}, mode = 'smart') {
+  const t = tool(name);
+  if (!t) return alert('Нет действия ' + name + (S.state.readonly ? ' (режим только чтения)' : ''));
+  D.tool = t; D.args = {};
+  for (const f of t.fields) if (f.default !== undefined) D.args[f.name] = f.default;
+  Object.assign(D.args, preset);
+  openDrawer(t.title);
+  renderForm();
+  const ready = t.fields.every((f) => !f.required || (D.args[f.name] !== undefined && D.args[f.name] !== ''));
+  if (mode === 'auto' || (mode === 'smart' && ready && name !== 'host_reboot')) go();
+}
+const LABEL = { target: 'Где', host: 'Сервер', source: 'Какие логи', service: 'Сервис', action: 'Действие', lines: 'Строк', grep: 'Фильтр', since: 'За какое время', command: 'Команда', securityOnly: 'Только security', batch: 'Сколько серверов за раз', path: 'Путь', port: 'Порт', device: 'Устройство' };
+const labelOf = (f) => LABEL[f.name] || f.hint || f.name;
+function fieldHtml(f) {
+  const v = D.args[f.name];
+  const id = 'f_' + f.name;
+  const hint = f.hint ? '<div class="hint">' + esc(f.hint) + '</div>' : '';
+  if (f.kind === 'boolean') return '<div class="field inline"><input type="checkbox" id="' + id + '" ' + (v ? 'checked' : '') + '> <label for="' + id + '">' + esc(f.hint || labelOf(f)) + '</label> <span class="muted" style="font-size:12px">(' + esc(f.name) + ')</span></div>';
+  let input;
+  if (f.kind === 'enum') input = '<select id="' + id + '">' + (f.required || f.default !== undefined ? '' : '<option value="">—</option>') + f.options.map((o) => '<option ' + (o === v ? 'selected' : '') + '>' + esc(o) + '</option>').join('') + '</select>';
+  else if (f.name === 'host') input = '<select id="' + id + '"><option value="">— выберите сервер —</option>' + S.state.hosts.map((h) => '<option value="' + esc(h.name) + '" ' + (h.name === v ? 'selected' : '') + '>' + esc(h.name + (h.title ? ' · ' + h.title : '')) + '</option>').join('') + '</select>';
+  else if (f.kind === 'json') input = '<textarea id="' + id + '" rows="3">' + esc(v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v)) + '</textarea>';
+  else input = '<input id="' + id + '" type="' + (f.hidden ? 'password' : f.kind === 'number' ? 'number' : 'text') + '" value="' + esc(v === undefined ? '' : Array.isArray(v) ? v.join(',') : v) + '"' + (f.name === 'target' ? ' list="targets"' : f.name === 'source' || f.name === 'service' ? ' list="sources"' : '') + '>';
+  const host = S.state.hosts.find((h) => h.name === D.args.host);
+  const chips = (f.name === 'source' || f.name === 'service') && host ? '<div class="suggest" style="margin-top:6px">' + [...new Set([...host.services, ...(f.name === 'source' ? [...host.logs, 'journal'] : [])])].map((x) => '<button type="button" class="pickv" data-f="' + f.name + '" data-v="' + esc(x) + '">' + esc(x) + '</button>').join('') + '</div>' : '';
+  const extra = f.name === 'target' ? '<div class="hint" id="resolved"></div>' : '';
+  const showHint = !['target', 'host', 'source', 'service'].includes(f.name) || !LABEL[f.name];
+  return '<div class="field"><label for="' + id + '">' + esc(labelOf(f)) + (f.required ? ' *' : '') + ' <span class="muted" style="font-weight:400;font-size:12px">' + esc(f.name) + '</span></label>' + input + (showHint && LABEL[f.name] ? hint : '') + chips + extra + '</div>';
+}
+function renderForm() {
+  const t = D.tool;
+  const main = t.fields.filter((f) => f.required || ['target', 'host', 'source', 'service', 'securityOnly', 'action'].includes(f.name));
+  const rest = t.fields.filter((f) => !main.includes(f));
+  const targets = ['all', 'role:remnanode', ...Object.keys(S.state.groups), ...new Set(S.state.hosts.flatMap((h) => h.tags.map((x) => 'tag:' + x))), ...S.state.hosts.map((h) => h.name)];
+  const host = S.state.hosts.find((h) => h.name === D.args.host);
+  const sources = host ? [...host.services, ...host.logs, 'journal'] : [];
+  body((t.fields.length ? '' : '<p class="muted">Без параметров.</p>') + main.map(fieldHtml).join('') + (rest.length ? '<details class="more"><summary>Ещё параметры (' + rest.length + ')</summary>' + rest.map(fieldHtml).join('') + '</details>' : '') +
+    '<datalist id="targets">' + targets.map((x) => '<option value="' + esc(x) + '">').join('') + '</datalist><datalist id="sources">' + sources.map((x) => '<option value="' + esc(x) + '">').join('') + '</datalist>');
+  foot('<button class="primary big" id="go">' + (t.planned ? 'Построить план' : 'Выполнить') + '</button><span class="muted">' + (t.planned ? 'ничего не меняется, пока вы не нажмёте «Выполнить» под планом' : t.readonly ? 'только читает' : '') + '</span>');
+  $('go').addEventListener('click', go);
+  const tf = $('f_target');
+  if (tf) { tf.addEventListener('input', resolveHint); resolveHint(); }
+  const hf = $('f_host');
+  if (hf) hf.addEventListener('change', () => { readForm(); renderForm(); });
+  // a service of this server is one click: fill it in and go
+  $('dBody').querySelectorAll('.pickv').forEach((b) => b.addEventListener('click', () => { $('f_' + b.dataset.f).value = b.dataset.v; go(); }));
+}
+let resolveTimer;
+function resolveHint() {
+  clearTimeout(resolveTimer);
+  resolveTimer = setTimeout(async () => {
+    const v = $('f_target') && $('f_target').value.trim(); if (!$('resolved')) return;
+    if (!v) { $('resolved').textContent = ''; return; }
+    const r = await api('api/resolve?target=' + encodeURIComponent(v)).catch((e) => ({ error: e.message }));
+    $('resolved').innerHTML = r.error ? '<span class="crit">' + esc(r.error) + '</span>' : '→ ' + hostsWord(r.hosts.length) + ': ' + esc(r.hosts.slice(0, 12).join(' ')) + (r.hosts.length > 12 ? ' …' : '');
+  }, 200);
+}
+function readForm() {
+  for (const f of D.tool.fields) {
+    const el = $('f_' + f.name); if (!el) continue;
+    if (f.kind === 'boolean') { D.args[f.name] = el.checked; continue; }
+    const v = el.value.trim();
+    if (v === '') { delete D.args[f.name]; continue; }
+    if (f.kind === 'number') D.args[f.name] = Number(v);
+    else if (f.kind === 'list') D.args[f.name] = v.split(',').map((x) => x.trim()).filter(Boolean);
+    else if (f.kind === 'json') { try { D.args[f.name] = JSON.parse(v); } catch { D.args[f.name] = v; } }
+    else D.args[f.name] = v;
+  }
+}
+function progressView(title) {
+  const hosts = new Map();
+  const started = Date.now();
+  let timer;
+  const draw = () => {
+    const done = [...hosts.values()].filter((h) => h.s !== 'run' && h.s !== 'wait').length;
+    const fail = [...hosts.values()].filter((h) => h.s === 'fail').length;
+    body('<div class="plan-head"><span class="spin"></span> ' + esc(title) + ' <span class="muted">' + (hosts.size ? done + ' из ' + hosts.size : '') + (fail ? ' · <span class="crit">✖ ' + fail + '</span>' : '') + ' · ' + Math.floor((Date.now() - started) / 1000) + ' с</span></div><ul class="steps progress">' +
+      [...hosts].map(([n, h]) => '<li>' + (h.s === 'ok' ? '<span class="ok">✔</span>' : h.s === 'fail' ? '<span class="crit">✖</span>' : h.s === 'run' ? '<span class="spin"></span>' : '<span class="muted">○</span>') + ' <b>' + esc(n) + '</b>' + (h.note ? ' <span class="crit">' + esc(String(h.note).split(' — ')[0]) + '</span>' : '') + '<span class="t">' + (h.ms !== undefined ? (h.ms / 1000).toFixed(1) + ' с' : h.s === 'run' ? Math.floor((Date.now() - h.at) / 1000) + ' с' : '') + '</span></li>').join('') + '</ul>');
+  };
+  draw();
+  timer = setInterval(draw, 500);
+  return {
+    on(p) {
+      if (p.kind === 'hosts') { if (p.phase === 'apply') hosts.clear(); p.hosts.forEach((h) => hosts.has(h) || hosts.set(h, { s: 'wait' })); }
+      else if (p.state === 'run') hosts.set(p.host, { s: 'run', at: (hosts.get(p.host) || {}).at || Date.now() });
+      else hosts.set(p.host, { s: p.state, ms: p.ms, note: p.note });
+      draw();
+    },
+    stop() { clearInterval(timer); },
+  };
+}
+async function go() {
+  readForm();
+  const t = D.tool;
+  const missing = t.fields.filter((f) => f.required && (D.args[f.name] === undefined || D.args[f.name] === ''));
+  if (missing.length) { alert('Заполните: ' + missing.map(labelOf).join(', ')); return; }
+  D.busy = true;
+  foot('<span class="muted">' + (t.planned ? 'строю план — ничего не меняется' : 'выполняю') + '…</span>');
+  const pv = progressView(t.planned ? 'Строю план' : 'Выполняю');
+  let res;
+  try { res = await job(t.name, t.planned ? { ...D.args, apply: false } : D.args, pv.on); }
+  catch (e) { res = { ok: false, error: e.message }; }
+  pv.stop(); D.busy = false;
+  if (!res.ok) { body('<div class="confirm">' + esc(res.error) + '</div>'); foot('<button id="back">← Параметры</button>'); $('back').addEventListener('click', renderForm); return; }
+  if (t.planned) return showPlan(res);
+  showResult(t.name, res);
+}
+const KEY_RU = { uptime: 'аптайм', rebootRequired: 'нужен ребут', upgradable: 'обновлений', security: 'security', packages: 'пакеты', panel: 'панель', users: 'пользователей', image: 'образ', running: 'работает', latest: 'последний', cert: 'сертификат', daysLeft: 'дней осталось', disk: 'диск', free: 'свободно' };
+function nowLine(v) {
+  if (v === undefined || v === null) return '';
+  if (v === true) return 'да';
+  if (v === false) return 'нет';
+  if (typeof v !== 'object') return esc(v);
+  if (Array.isArray(v)) return v.length + (v.length ? ' (' + esc(v.slice(0, 5).map((x) => typeof x === 'string' ? x.split(' ')[0] : JSON.stringify(x)).join(', ')) + (v.length > 5 ? ', …' : '') + ')' : '');
+  return Object.entries(v).filter(([, x]) => x !== undefined && x !== null && x !== '' && !(Array.isArray(x) && !x.length)).map(([k, x]) => esc(KEY_RU[k] || k) + ' ' + nowLine(x)).join(' · ');
+}
+function showPlan(res) {
+  const d = res.data; const t = D.tool;
+  D.plan = d;
+  const plan = d.plan || [];
+  const skips = plan.filter((p) => p.skip).length;
+  const blocks = plan.filter((p) => p.blockers && p.blockers.length).length;
+  const todo = (d.toRun || 0) - blocks;
+  const groups = new Map();
+  for (const p of plan) { const k = JSON.stringify([p.skip, p.will, p.now, p.after, p.warnings, p.blockers]); const g = groups.get(k) || { who: [], p }; g.who.push(p.host || p.target); groups.set(k, g); }
+  let html = '<div class="plan-head">План: <span class="ok">изменится ' + todo + '</span>' + (skips ? ' · <span class="muted">пропуск ' + skips + '</span>' : '') + (blocks ? ' · <span class="crit">блокеров ' + blocks + '</span>' : '') + (d.rollout ? ' <span class="muted">· по ' + d.rollout.batch + ' за раз, стоп на первой ошибке</span>' : '') + '</div>';
+  for (const { who, p } of groups.values()) {
+    html += '<div class="group"><div class="who">' + (p.skip ? '<span class="muted">· ' + esc(who.join(', ')) + ' — пропуск: ' + esc(p.skip) + '</span>' : '▸ ' + esc(who.join(', ')) + (p.will && p.will !== '-' ? ' <span class="muted">— ' + esc(p.will) + '</span>' : '')) + '</div>' +
+      (p.now !== undefined ? '<div class="now">сейчас: ' + nowLine(p.now) + '</div>' : '') + (p.after !== undefined ? '<div class="now">станет: ' + nowLine(p.after) + '</div>' : '') +
+      (p.warnings || []).map((w) => '<div class="w">▲ ' + esc(ru(w)) + '</div>').join('') + (p.blockers || []).map((b) => '<div class="b">✖ ' + esc(ru(b)) + '</div>').join('') + '</div>';
+  }
+  const nothing = !d.planHash || d.toRun === 0;
+  if (nothing) html += '<p class="ok">Делать нечего: всё уже как надо.</p>';
+  if (res.risk) html += '<div class="confirm">▲ <b>' + esc(res.risk.text) + '.</b> Это не отменить.<br>Для подтверждения введите <b>' + esc(res.risk.answer) + '</b>:<br><input id="riskIn" autocomplete="off"></div>';
+  body(html);
+  const buttons = [];
+  if (res.unreachableOnly && res.unreachableOnly.length) buttons.push('<button class="primary big" id="rest">Выполнить на остальных (' + Math.max(0, (d.toRun || 0) - res.unreachableOnly.length) + ')</button><span class="muted">не отвечают: ' + esc(res.unreachableOnly.join(', ')) + '</span>');
+  else if (!nothing && !blocks) buttons.push('<button class="' + (res.risk ? 'danger' : 'primary') + ' big" id="apply"' + (res.risk ? ' disabled' : '') + '>Выполнить</button>');
+  else if (blocks) buttons.push('<span class="crit">Есть блокеры — выполнить нельзя.</span>');
+  buttons.push('<button id="back">← Параметры</button>');
+  foot(buttons.join(''));
+  $('back').addEventListener('click', renderForm);
+  if ($('rest')) $('rest').addEventListener('click', () => { D.args.skipUnreachable = true; go(); });
+  if ($('apply')) $('apply').addEventListener('click', () => apply(d.planHash));
+  if ($('riskIn')) { $('riskIn').focus(); $('riskIn').addEventListener('input', (e) => { $('apply').disabled = e.target.value.trim().toLowerCase() !== res.risk.answer.toLowerCase(); }); $('riskIn').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('apply').disabled) $('apply').click(); }); }
+  else if ($('apply')) $('apply').focus();
+}
+async function apply(planHash) {
+  const t = D.tool;
+  D.busy = true;
+  foot('<span class="muted">выполняю — не закрывайте страницу</span>');
+  const pv = progressView('Выполняю');
+  let res;
+  try { res = await job(t.name, { ...D.args, apply: true, planHash }, pv.on); }
+  catch (e) { res = { ok: false, error: e.message }; }
+  pv.stop(); D.busy = false;
+  S.suggest = []; renderSuggest();
+  showResult(t.name, res, true);
+}
+function table(rows) {
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((k) => rows.some((r) => r[k] !== undefined && r[k] !== ''));
+  return '<table><tr>' + cols.map((c) => '<th>' + esc(c) + '</th>').join('') + '</tr>' + rows.map((r) => '<tr>' + cols.map((c) => '<td>' + esc(typeof r[c] === 'object' && r[c] !== null ? JSON.stringify(r[c]) : r[c]) + '</td>').join('') + '</tr>').join('') + '</table>';
+}
+function valueHtml(v, depth = 0) {
+  if (v === null || v === undefined) return '<span class="muted">—</span>';
+  if (typeof v === 'string') return v.includes('\n') ? '<pre>' + esc(v) + '</pre>' : esc(v);
+  if (typeof v !== 'object') return esc(v);
+  if (Array.isArray(v)) {
+    if (v.length && v.every((x) => x && typeof x === 'object' && !Array.isArray(x))) return table(v);
+    return v.map((x) => valueHtml(x, depth + 1)).join('<br>');
+  }
+  return '<div style="margin-left:' + (depth ? 12 : 0) + 'px">' + Object.entries(v).map(([k, x]) => '<div style="margin:4px 0"><b>' + esc(k) + ':</b> ' + valueHtml(x, depth + 1) + '</div>').join('') + '</div>';
+}
+function showResult(name, res, applied) {
+  let html = '';
+  if (!res.ok) html = '<div class="confirm">' + esc(res.error) + '</div>';
+  else if (applied || (res.data && res.data.mode)) {
+    const d = res.data; const r = d.results || [];
+    const ok = r.filter((x) => x.ok).length;
+    html = '<div class="plan-head ' + (d.mode === 'applied' ? 'ok' : 'crit') + '">' + (d.mode === 'applied' ? '✔ Выполнено' : d.mode === 'nothing-to-do' ? '✔ Делать нечего' : d.mode === 'aborted' ? '▲ Не выполнено: ' + esc(d.reason) : '✖ Остановлено' + (d.stoppedAt ? ' на ' + esc(d.stoppedAt) : '')) + (r.length ? ' <span class="muted">· ok ' + ok + (r.length - ok ? ' · ошибок ' + (r.length - ok) : '') + '</span>' : '') + '</div>' +
+      r.map((x) => '<div class="group"><div class="who">' + (x.ok ? '<span class="ok">✔</span>' : '<span class="crit">✖</span>') + ' ' + esc(x.host || x.target) + (x.ms ? ' <span class="muted">' + (x.ms / 1000).toFixed(1) + ' с</span>' : '') + (x.error ? ' <span class="crit">' + esc(x.error) + '</span>' : '') + '</div>' + (x.output ? '<details><summary class="muted">вывод</summary><pre>' + esc(x.output) + '</pre></details>' : '') + '</div>').join('') +
+      ((d.notRun || []).length ? '<p class="warn">не запускалось: ' + esc(d.notRun.join(', ')) + '</p>' : '');
+  } else if (name === 'host_logs') html = '<div class="muted">' + esc(res.data.source) + ' · ' + esc(res.data.lines) + ' строк</div><pre>' + esc(res.data.log) + '</pre>';
+  else if (name === 'fleet_audit') {
+    const f = res.data.findings || {};
+    html = Object.keys(f).length ? Object.entries(f).map(([h, list]) => '<div class="group"><div class="who">' + esc(h) + '</div>' + list.map((l) => { const m = String(l).match(/^(\w+) ([\w.]+): (.*)$/); return m ? '<div class="' + (m[1] === 'CRIT' ? 'b' : m[1] === 'WARN' ? 'w' : 'now') + '">' + (m[1] === 'CRIT' ? '✖' : m[1] === 'WARN' ? '▲' : '·') + ' ' + esc(CODES()[m[2]] || m[2]) + ' — ' + esc(m[3]) + '</div>' : '<div>' + esc(l) + '</div>'; }).join('') + '</div>').join('') : '<p class="ok">✔ Замечаний нет.</p>';
+  } else if (res.data && Array.isArray(res.data.rows)) html = table(res.data.rows);
+  else html = valueHtml(res.data);
+  if (res.next && res.next.length) html += '<h3>Дальше</h3><div class="next">' + res.next.map((n, i) => '<button data-i="' + i + '">' + esc(n.label) + (n.hint ? ' <span class="muted">· ' + esc(n.hint) + '</span>' : '') + '</button>').join('') + '</div>';
+  body(html);
+  foot('<button id="again">↻ Ещё раз</button><button id="back">← Параметры</button>' + (applied ? '<button class="primary" id="stat">↻ Обновить статус</button>' : '') + '<span class="grow"></span><button id="close">Закрыть</button>');
+  $('again').addEventListener('click', go); $('back').addEventListener('click', renderForm); $('close').addEventListener('click', closeDrawer);
+  if ($('stat')) $('stat').addEventListener('click', () => { closeDrawer(); refresh(); });
+  $('dBody').querySelectorAll('.next button').forEach((b) => b.addEventListener('click', () => runNext(res.next[+b.dataset.i])));
+}
+function runNext(n) {
+  if (n.setup) { alert('Это делается в терминале: mia setup → «Хосты: добавить из tailnet»'); return; }
+  openAction(n.tool, n.preset || {}, 'auto');
+}
+
+// ---------------------------------------------------------------- start
+(async () => {
+  try { S.state = await api('api/state'); }
+  catch (e) { document.body.innerHTML = '<p style="margin:40px">' + esc(e.message) + '</p>'; return; }
+  renderSummary(); renderRows();
+  S.runningNotes = (S.state.running || []).map((j) => 'Идёт: ' + j.title + (j.apply ? ' (выполнение)' : ' (план)') + (j.target ? ' — ' + j.target : '') + ', с ' + new Date(j.at).toLocaleTimeString('ru') + '. Не запускайте то же ещё раз, пока не закончится.');
+  showNotices([]);
+  if (S.state.hosts.length) refresh();
+})();
+</script>
+</body>
+</html>

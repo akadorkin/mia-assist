@@ -1,0 +1,112 @@
+# mia inventory. Copy to ~/.config/mia/fleet.yaml (or point MIA_INVENTORY at it).
+# The real file names hosts: keep it out of git (.gitignore already does).
+# `mia discover` / fleet_discover prints ready entries from Tailscale and the panel.
+
+defaults:
+  user: ops                  # ssh user; vps-edge-run.sh gives it NOPASSWD sudo
+  # port: 22
+  # sudo: true               # default: true unless user is root
+
+# Audit baseline (fleet_audit). Defaults follow the fleet as it runs now (MGMT-PORTS, ipset blacklists,
+# beszel-agent, security updates automatic, reboots by hand); override globally or per host.
+policy:
+  publicPorts: ["80/tcp", "80/udp", "443/tcp", "443/udp"]
+  certWarnDays: 21
+  # mgmtPorts: [22, 2222, 9100, 45876, 5201, 2112, 2113]   # never public; crit if they are
+  # securityUpdates: true      # unattended security updates expected (fleet policy)
+  # autoReboot: false          # reboots only by hand
+  # certCritDays: 7
+  # diskWarnPct: 85
+  # diskCritPct: 95
+  # geoMaxAgeHours: 72
+  # jails: [sshd, sshd-fast, recidive]
+  # skip: [tune.qdisc]       # mute finding codes (or prefixes: "tune")
+
+groups:
+  eu: [nl-1, de-1]
+
+hosts:
+  # A node built with vps-edge-run.sh --remnanode=1 --tailscale=1
+  nl-1:
+    address: nl-1            # Tailscale MagicDNS name, tailnet IP or ~/.ssh/config alias
+    roles: [remnanode]       # remnanode ⇒ edge baseline + remnanode/certbot/geo checks
+    domain: nl1.example.com  # certbot domain; also used to match the panel node
+    panelNode: "NL-1"        # node name in the panel (default: matched by domain/address/name)
+    tags: [prod]
+    provider: hetzner
+    bootstrap:               # how node_bootstrap reached it before Tailscale existed
+      address: 203.0.113.10
+      user: root
+
+  de-1:
+    address: de-1
+    roles: [remnanode]
+    domain: de1.example.com
+    tags: [prod]
+    policy:
+      publicPorts: ["80/tcp", "80/udp", "443/tcp", "443/udp", "8443/tcp"]   # an extra inbound here
+
+  # The panel host: compose project at /opt/remnawave by default
+  panel:
+    address: panel
+    roles: [panel]
+    services:
+      - name: remnawave                      # override the default compose path if yours differs
+        compose: /opt/remnawave/docker-compose.yml
+      - name: subscription-page
+        compose: /opt/remnawave/subscription/docker-compose.yml
+        expect: running
+
+  # Monitoring / misc
+  mon:
+    address: mon
+    roles: [docker]
+    services:
+      - name: uptime-kuma
+        container: uptime-kuma
+      - name: xray-checker
+        compose: /opt/xray-checker/docker-compose.yml
+      - name: caddy
+        unit: caddy
+        logs: /var/log/caddy/*.log
+
+  # Home server: media stack. Run `mia call host_services_discover host=home` once
+  # and paste its YAML here instead of writing services by hand.
+  home:
+    address: home
+    roles: [docker]
+    tags: [home]
+    policy:
+      tempWarnC: 80
+    apps:
+      jellyfin:
+        url: http://127.0.0.1:8096          # as seen from the host itself (requests go through ssh + curl)
+        apiKey: env:JELLYFIN_API_KEY        # Dashboard → API Keys; read from mia's environment
+        container: jellyfin                 # host paths are mapped through its volumes; becomes a service too
+      tdarr:
+        url: http://127.0.0.1:8265
+        # apiKey: env:TDARR_API_KEY         # only when Tdarr auth is enabled
+        container: tdarr
+    services:
+      - name: qbittorrent
+        container: qbittorrent
+      - name: torrentmonitor
+        container: torrentmonitor
+      - name: homeassistant
+        container: homeassistant
+      - name: samba                         # Time Machine share
+        unit: smbd
+
+  rpi:
+    address: rpi
+    tags: [home]
+    services:
+      - name: homebridge
+        unit: homebridge
+
+  # Hosts that fleet_update must never touch: put them in this group
+  # (groups: { hands-off: [nas] }) or tag them hands-off.
+
+  # The machine the MCP runs on (no ssh)
+  # me:
+  #   transport: local
