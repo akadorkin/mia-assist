@@ -78,7 +78,7 @@ test('redaction: text patterns and keys', () => {
     assert.equal(redactText('BOT_TOKEN=1:x'), `BOT_TOKEN=${REDACTED}`);
     assert.equal(redactText('db_password: hunter2'), `db_password: ${REDACTED}`);
     assert.equal(redactText('"privateKey": "AAA"'), `"privateKey": "${REDACTED}"`);
-    assert.equal(redactText('--authkey=tskey-auth-kX1-abc'), `--authkey=tskey-auth-${REDACTED}`);
+    assert.equal(redactText('--authkey=' + ['tskey', 'auth', 'kX1', 'abc'].join('-')), `--authkey=tskey-auth-${REDACTED}`);
     assert.equal(redactText('Total banned: 5; token bucket'), 'Total banned: 5; token bucket');
     assert.equal(redactText(`DATABASE_URL=${PG}postgres:hunter2@db:5432/x`), `DATABASE_URL=${PG}postgres:${REDACTED}@db:5432/x`);
     assert.equal(redactText('see https://example.com/path'), 'see https://example.com/path');

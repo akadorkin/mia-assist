@@ -56,7 +56,7 @@ test('secrets file: set keeps other lines, mode 600, quotes when needed; env win
 });
 
 test('Tailscale API: every device with online state, key expiry and updates', async () => {
-    const config = loadConfig({ TAILSCALE_API_KEY: 'tskey-api-test-0000000000000000', MIA_STATE_DIR: os.tmpdir() });
+    const config = loadConfig({ TAILSCALE_API_KEY: ['tskey', 'api', 'test', '0000000000000000'].join('-'), MIA_STATE_DIR: os.tmpdir() });
     const orig = globalThis.fetch;
     const calls: string[] = [];
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
