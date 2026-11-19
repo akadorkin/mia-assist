@@ -1,5 +1,4 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { stringify } from 'yaml';
@@ -10,7 +9,6 @@ import { Advance, Decision, ScenarioEngine } from './core/scenario.js';
 import { loadSecrets } from './core/secrets.js';
 import { Config, loadConfig } from './config.js';
 import { Ctx } from './core/ctx.js';
-import { startWeb } from './web/server.js';
 import { DemoTransport, demoEnv } from './demo.js';
 import { Transport } from './core/ssh.js';
 import { SCENARIOS } from './scenarios/index.js';
@@ -26,9 +24,7 @@ const HELP = `${c.bold(`mia ${VERSION}`)} — управление флотом:
 
   ${c.cyan('mia')}                          консоль: меню стрелками (буквы — поиск по всему), карточка
                                параметров, план → «Выполнить?» (Enter — да)
-  ${c.cyan('mia web')} [--port N]            то же в браузере: таблица серверов, кнопки, план → «Выполнить»
-  ${c.cyan('mia web --behind-proxy --host имя')} [--port N]  службой за Traefik на этой же машине (без ключа)
-  ${c.cyan('mia web --demo')}, ${c.cyan('mia --demo')}   потренироваться на выдуманном флоте: жать можно всё, серверы не трогаются
+  ${c.cyan('mia --demo')}                   потренироваться на выдуманном флоте: жать можно всё, серверы не трогаются
   ${c.cyan('mia setup')}                    настройка по порядку: ключи и адреса сервисов, потом хосты
   ${c.cyan('mia update')} [цель]            обновить пакеты (по умолчанию на всех): план → Enter
   ${c.cyan('mia node-update')} [цель]       обновить remnanode на всех нодах: план → Enter
@@ -46,8 +42,8 @@ const HELP = `${c.bold(`mia ${VERSION}`)} — управление флотом:
                                любой инструмент: сначала холостой прогон, потом
                                тот же вызов с apply=true planHash=…
   ${c.cyan('mia scenario')}                 ранбуки: правила xray, обновления флота
-  ${c.cyan('mia scenario')} <имя> ключ=значение …   запустить; ${c.cyan('resume')} <прогон> — продолжить;
-                               ${c.cyan('show')} <прогон> — журнал; ${c.cyan('step')} <прогон> apply|done|skip|retry;
+  ${c.cyan('mia scenario')} <имя> ключ=значение …   запустить; ${c.cyan('resume')} <прогон> — продолжить; ${c.cyan('auto')} <прогон | имя ключ=значение …> — все обратимые шаги подряд;
+                               ${c.cyan('start')} <имя> ключ=значение … — запустить без вопросов (ответ JSON); ${c.cyan('show')} <прогон> — журнал; ${c.cyan('step')} <прогон> apply|done|skip|retry;
                                ${c.cyan('set')} <прогон> ключ=значение — поменять параметр прогона
   ${c.cyan('mia secrets')} [set ИМЯ | unset ИМЯ | check]
                                ключи и адреса (панель, Tailscale, Cloudflare, Gitea, Beszel, MIA_REPOS …):
@@ -109,7 +105,7 @@ async function main() {
     }
     const { server, ctx, engine, bridge } = createServer(config, transport);
 
-    if (cmd === 'mcp' && demo) throw new Error('--demo только для консоли и web');
+    if (cmd === 'mcp' && demo) throw new Error('--demo только для консоли');
     if (cmd === 'mcp') {
         await server.connect(new StdioServerTransport());
         return;
@@ -118,7 +114,6 @@ async function main() {
     try {
         if (!cmd) return await startConsole({ ctx, engine, config });
         if (cmd === 'setup') return await startConsole({ ctx, engine, config }, { setup: 'wizard' });
-        if (cmd === 'web') return await webCmd({ ctx, config }, rest);
         // the frequent actions as commands: straight to the plan, one Enter to run
         const quick: Record<string, { tool: string; preset?: Record<string, unknown>; ask?: string[] }> = {
             update: { tool: 'apt_upgrade', preset: { target: 'all' } },
@@ -195,9 +190,21 @@ async function scenarioCmd(engine: ScenarioEngine, rest: string[]) {
         const scn = engine.load(id).scenario;
         return await walk(engine, await engine.setParams(id, parseArgs(more.slice(1), SCENARIOS.get(scn)!.params)));
     }
+    if (sub === 'auto') {
+        // mia scenario auto <прогон> | <имя> ключ=значение … — все обратимые шаги подряд, до ошибки или необратимого шага
+        const def = SCENARIOS.get(need(more[0], 'id прогона или имя ранбука'));
+        const adv = def ? await engine.start(more[0], parseArgs(more.slice(1), def.params)) : undefined;
+        return console.log(JSON.stringify(await engine.auto(adv?.step?.run ?? more[0], adv), null, 1));
+    }
+    if (sub === 'start') {
+        // mia scenario start <имя> ключ=значение … — без вопросов в терминале (для внешних пультов): проверки сами, первый меняющий шаг — планом, ответ JSON как у step
+        const def = SCENARIOS.get(need(more[0], 'имя ранбука'));
+        if (!def) throw new Error(`нет ранбука ${more[0]}; список: mia scenario`);
+        return console.log(JSON.stringify(await engine.start(more[0], parseArgs(more.slice(1), def.params)), null, 1));
+    }
     if (sub === 'step') {
-        const decision = need(more[1], 'решение (apply|done|skip|retry)') as Decision;
-        return console.log(JSON.stringify(await engine.decide(need(more[0], 'id прогона'), decision), null, 1));
+        const decision = need(more[1], 'решение (apply|done|skip|retry|cancel) [имя для необратимого шага]') as Decision;
+        return console.log(JSON.stringify(await engine.decide(need(more[0], 'id прогона'), decision, more[2]), null, 1));
     }
     let adv: Advance;
     if (sub === 'resume') adv = await engine.resume(need(more[0], 'id прогона'));
@@ -207,30 +214,6 @@ async function scenarioCmd(engine: ScenarioEngine, rest: string[]) {
         adv = await engine.start(sub, parseArgs(more, def.params));
     }
     await walk(engine, adv);
-}
-
-/** mia web [--port N] [--no-open]: the page on this machine; runs until Ctrl+C. */
-async function webCmd(deps: { ctx: Ctx; config: Config }, rest: string[]) {
-    const i = rest.indexOf('--port');
-    const want = i >= 0 ? Number(rest[i + 1]) : 7331;
-    // --behind-proxy --host NAME [--host NAME2]: as a service behind Traefik on this machine (see web/server.ts)
-    const proxyHosts = rest.includes('--behind-proxy') ? rest.flatMap((a, k) => (a === '--host' && rest[k + 1] ? [rest[k + 1].toLowerCase()] : [])) : [];
-    if (rest.includes('--behind-proxy') && !proxyHosts.length) throw new Error('--behind-proxy: укажите --host имя (например dash.example.com)');
-    const web = proxyHosts.length ? await startWeb(deps, { port: want, proxyHosts }) : await startWeb(deps, { port: want }).catch(() => startWeb(deps, { port: 0 }));
-    if (proxyHosts.length) console.log(`${c.bold('mia web')} — 127.0.0.1:${new URL(web.url).port} за прокси для ${proxyHosts.join(', ')} (без ключа: доступ решает прокси)`);
-    else {
-        console.log(`${c.bold('mia web')} — ${c.cyan(web.url)}`);
-        console.log(c.gray('В ссылке ключ этого запуска; страница работает только на этом компьютере (127.0.0.1). Ctrl+C — остановить.'));
-    }
-    if (!proxyHosts.length && !rest.includes('--no-open')) {
-        const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-        spawn(opener, [web.url], { stdio: 'ignore', detached: true }).on('error', () => undefined).unref();
-    }
-    await new Promise<void>((resolve) => {
-        process.once('SIGINT', () => resolve());
-        process.once('SIGTERM', () => resolve()); // systemd stop
-    });
-    await web.close();
 }
 
 function need(v: string | undefined, what: string): string {

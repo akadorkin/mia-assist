@@ -7,7 +7,7 @@ import { report } from './core/progress.js';
 import { ExecOptions, ExecResult, Transport } from './core/ssh.js';
 
 /**
- * `mia --demo` / `mia web --demo`: a made-up fleet to click through. Nothing leaves this machine — the
+ * `mia --demo`: a made-up fleet to click through. Nothing leaves this machine — the
  * transport below answers instead of ssh, and «Выполнить» changes only this fleet's pretend state
  * (an update empties the list of updates, a reboot clears «нужен ребут» …). Keys, the panel and the
  * owner's fleet.yaml are not read.

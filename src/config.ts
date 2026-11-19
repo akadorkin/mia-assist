@@ -49,6 +49,8 @@ export interface Config {
     /** Tailscale API (every device, key expiry, removal); without it the local `tailscale status` is used. */
     tailscaleApi?: { key: string; tailnet: string };
     cloudflareToken?: string;
+    /** Hetzner Cloud API token (read/write): buy and delete the fleet's cloud servers. */
+    hetznerToken?: string;
     gitea?: { url: string; token: string };
     beszel?: { url: string; email: string; password: string };
     /** Author of the commits scenarios make in your repos (MIA_GIT_AUTHOR="Name <email>"): a checkout without user.name refuses to commit. */
@@ -106,6 +108,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         remnawaveMcp: env.MIA_REMNAWAVE_MCP?.trim() || undefined,
         tailscaleApi: env.TAILSCALE_API_KEY ? { key: env.TAILSCALE_API_KEY, tailnet: env.TAILSCALE_TAILNET || '-' } : undefined,
         cloudflareToken: env.CLOUDFLARE_API_TOKEN || undefined,
+        hetznerToken: env.HETZNER_API_TOKEN || undefined,
         gitea: env.GITEA_URL && env.GITEA_TOKEN ? { url: env.GITEA_URL.replace(/\/+$/, ''), token: env.GITEA_TOKEN } : undefined,
         gitAuthor: parseAuthor(env.MIA_GIT_AUTHOR),
         beszel: env.BESZEL_URL && env.BESZEL_EMAIL && env.BESZEL_PASSWORD ? { url: env.BESZEL_URL.replace(/\/+$/, ''), email: env.BESZEL_EMAIL, password: env.BESZEL_PASSWORD } : undefined,

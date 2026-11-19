@@ -177,8 +177,8 @@ Environment (or `~/.config/mia/secrets.env`, managed by `mia secrets`):
 
 ## Also in the box
 
-- `mia` — an interactive terminal console (menus, search, plan → Enter) and `mia web` — the same as a
-  local page on 127.0.0.1 (`mia web --demo` to try it). Both are in Russian.
+- `mia` — an interactive terminal console (menus, search, plan → Enter), in Russian
+  (`mia --demo` to try it on a made-up fleet).
 - `mia sessions-digest` — reads your local Claude Code transcripts (`~/.claude/projects`, secrets
   masked) and writes a per-session digest plus a summary of hosts, IPs, domains and containers seen, to
   bootstrap an inventory. Local only.

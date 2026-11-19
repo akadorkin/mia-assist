@@ -294,7 +294,7 @@ export async function confirm(ask: Ask, question: string): Promise<boolean> {
     }
 }
 
-const CHOICE: Record<Decision, string> = { apply: 'да — выполнить', done: 'd — сделано', skip: 's — пропустить', retry: 'r — проверить снова' };
+const CHOICE: Record<Decision, string> = { apply: 'да — выполнить', done: 'd — сделано', skip: 's — пропустить', retry: 'r — проверить снова', cancel: 'c — отменить прогон' };
 
 /** What Enter answers on a step: run it, mark the manual work done, or check again. */
 const defaultChoice = (choices: Decision[]): Decision | undefined => (['apply', 'done', 'retry'] as Decision[]).find((x) => choices.includes(x));
@@ -346,6 +346,7 @@ export async function walk(engine: ScenarioEngine, adv: Advance, ask?: Ask) {
                 return;
             }
             let decision: Decision | undefined;
+            let typed: string | undefined;
             while (!decision) {
                 const raw = (await ask(`${hint}\n> `)).trim();
                 const a = raw.toLowerCase();
@@ -371,6 +372,11 @@ export async function walk(engine: ScenarioEngine, adv: Advance, ask?: Ask) {
                 if (mapped === 'apply' && s.choices.includes('apply')) {
                     const risk = riskOf(s.tool, s.preview);
                     if (risk && !(await typedConfirm(ask, risk))) continue;
+                    if (s.needsConfirm) {
+                        console.log(`${c.yellow('▲')} ${c.bold('Шаг необратим.')} ${c.yellow('Это не отменить.')}`);
+                        typed = (await ask(`  Для подтверждения введите имя из плана ${c.gray('(Enter — отмена)')}: `)).trim();
+                        if (!typed) continue;
+                    }
                 }
                 if (mapped && s.choices.includes(mapped)) decision = mapped;
                 else if (!a) console.log(c.yellow('Здесь Enter ничего не выбирает. Варианты: ') + hint);
@@ -378,7 +384,7 @@ export async function walk(engine: ScenarioEngine, adv: Advance, ask?: Ask) {
             }
             if (decision) {
                 const d = decision;
-                adv = await spin(d === 'apply' ? 'выполняю шаг' : d === 'retry' ? 'проверяю снова' : 'дальше', () => engine.decide(s.run, d));
+                adv = await spin(d === 'apply' ? 'выполняю шаг' : d === 'retry' ? 'проверяю снова' : 'дальше', () => engine.decide(s.run, d, typed));
             }
         }
     } finally {

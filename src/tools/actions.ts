@@ -1,6 +1,9 @@
 import { tsCreateAuthKey } from '../core/tailscale.js';
 import dns from 'node:dns/promises';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import net from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { Ctx } from '../core/ctx.js';
@@ -34,6 +37,63 @@ async function usersOnline(ctx: Ctx, hosts: Host[]): Promise<Map<string, { node:
 function unreachableStep(h: Host, f: HostFacts | undefined): HostStep | undefined {
     if (f && f.reachable) return undefined;
     return { host: h, action: '-', script: '', blockers: [`unreachable: ${f?.error ?? 'not probed'}`] };
+}
+
+/** Ports a ufw rule must not open to the world without allowDangerous (baseline: Tailscale-only). */
+const DANGEROUS_PORTS = [22, 2222, 5443, 5444, 9100];
+
+/** Does `from` mean the whole internet? Missing, any /0, or a v4 prefix < 8 / v6 prefix < 16 (two /1 halves = the world). */
+export function ufwFromIsWorld(from?: string): boolean {
+    if (!from) return true;
+    const m = from.match(/\/(\d+)$/);
+    if (!m) return false;
+    return Number(m[1]) < (from.includes(':') ? 16 : 8);
+}
+
+/** Dangerous ports inside `port` ("22" or a range "20:30"), checked over the whole range. */
+export function ufwDangerousPorts(port: string, extra: number[] = []): number[] {
+    const [a, b = a] = port.split(':').map(Number);
+    const [lo, hi] = a <= b ? [a, b] : [b, a];
+    return [...new Set([...DANGEROUS_PORTS, ...extra])].filter((p) => p >= lo && p <= hi).sort((x, y) => x - y);
+}
+
+/** TCP connect from this machine: true when something answers within the timeout. */
+export function tcpOpen(host: string, port: number, timeoutMs = 5000): Promise<boolean> {
+    return new Promise((ok) => {
+        const s = net.connect({ host, port, timeout: timeoutMs });
+        const done = (v: boolean) => (s.destroy(), ok(v));
+        s.once('connect', () => done(true)).once('timeout', () => done(false)).once('error', () => done(false));
+    });
+}
+
+/** Ports re-probed after a ufw change: 2222 (panel → node) and, for deny/delete, the rule's own single tcp port. */
+export function ufwProbePorts(op: string, port: string, proto: string): number[] {
+    const own = op !== 'allow' && proto !== 'udp' && /^\d+$/.test(port) ? [Number(port)] : [];
+    return [...new Set([2222, ...own])];
+}
+
+/**
+ * After ufw on one host: a brand-new ssh (a live ControlMaster connection would hide a cut) and every port
+ * that answered before still answers. shortcut: probes go from mia's machine over the tailnet, so a rule that
+ * only cuts the public side is not seen; a deliberate close of a working port stops the rollout too — run the rest by hand.
+ */
+export async function ufwStillReachable(ctx: Ctx, h: Host, openBefore: number[], probe = tcpOpen): Promise<string | true> {
+    const ssh = await ctx.transport.exec(h, 'true', { fresh: true, timeoutMs: 30_000 });
+    if (!ssh.ok) return `a new ssh login fails after the change (${ssh.error ?? 'failed'}): rollout stopped`;
+    const lost: number[] = [];
+    for (const p of openBefore) if (!(await probe(h.address, p))) lost.push(p);
+    return lost.length ? `port ${lost.join(',')} answered before the change and does not now: rollout stopped` : true;
+}
+
+/** Hosts that are never rebooted by mia (the `hands-off` group). Same set fleet_update skips. */
+export function rebootBlocker(h: Host): string | undefined {
+    if (h.groups.includes('hands-off')) return 'reboots only by the owner, by hand (hands-off)';
+    return undefined;
+}
+
+/** A shell command that reboots or powers off the host. */
+export function commandReboots(cmd: string): boolean {
+    return /(?<![\w-])(reboot|shutdown|poweroff|halt)(?![\w-])|\binit\s+[06]\b|\bsystemctl\s+(kexec|reboot|poweroff|halt)\b/.test(cmd);
 }
 
 // ---------------------------------------------------------------- service helpers
@@ -378,7 +438,7 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
 
         server.tool(
             'ufw_rule',
-            'Add or delete a UFW rule on hosts, e.g. open a new public port for an inbound (allow 8443/tcp on the internet interface) or close one. Public exposure of 22/2222/5443/5444/9100 is blocked unless allowDangerous. The rule list before the change is shown in the dry run.',
+            'Add or delete a UFW rule on hosts, e.g. open a new public port for an inbound (allow 8443/tcp on the internet interface) or close one. Public exposure (no from, 0.0.0.0/0, ::/0) of 22/2222/5443/5444/9100 and the host mgmtPorts — anywhere inside a range — is blocked unless allowDangerous. The rule list before the change is shown in the dry run. One host at a time; after each, a brand-new ssh login and a TCP probe of 2222 (and of the rule\'s port for deny/delete) — what answered before must answer after, else the rollout stops.',
             {
                 target: targetParam,
                 op: z.enum(['allow', 'deny', 'delete-allow', 'delete-deny']),
@@ -399,13 +459,16 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                         const cmds = protos.map(
                             (p) => `ufw ${verb} ${args.iface ? `in on ${args.iface} ` : ''}${args.from ? `from ${args.from} ` : ''}to any port ${args.port} proto ${p}`,
                         );
-                        const opensPublic = args.op === 'allow' && !args.from && args.iface !== 'tailscale0';
-                        const dangerous = opensPublic && ['22', '2222', '5443', '5444', '9100'].includes(args.port.split(':')[0]);
+                        const opensPublic = args.op === 'allow' && ufwFromIsWorld(args.from) && args.iface !== 'tailscale0';
+                        // what answers now, probed only on apply (not part of the plan): the same ports must answer after each host
+                        const ports = ufwProbePorts(args.op, args.port, args.proto);
+                        const openBefore = new Map(args.apply ? await Promise.all(hosts.map(async (h) => [h.name, (await Promise.all(ports.map(async (p) => ((await tcpOpen(h.address, p)) ? p : 0)))).filter(Boolean)] as const)) : []);
                         return hosts.map((h): HostStep => {
                             const f = facts.get(h.name);
                             const bad = unreachableStep(h, f);
                             if (bad) return bad;
                             const policyOk = h.policy.publicPorts.some((p) => protos.every((pr) => p === `${args.port}/${pr}`));
+                            const dangerous = opensPublic ? ufwDangerousPorts(args.port, h.policy.mgmtPorts) : [];
                             return {
                                 host: h,
                                 action: cmds.join(' && '),
@@ -413,7 +476,8 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                                 preview: { ufw: f!.ufw?.active ? 'active' : 'INACTIVE', rules: f!.ufw?.rules.map((r) => `${r.to} ${r.action} ${r.from}`) },
                                 fingerprint: f!.ufw?.rules.map((r) => `${r.to} ${r.action} ${r.from}`),
                                 warnings: opensPublic && !policyOk ? [`${args.port}/${args.proto} is not in policy.publicPorts: fleet_audit will flag it until you add it to fleet.yaml`] : undefined,
-                                blockers: dangerous && !args.allowDangerous ? [`opening ${args.port} to the internet breaks the baseline (Tailscale-only); pass allowDangerous:true if you really mean it`] : undefined,
+                                blockers: dangerous.length && !args.allowDangerous ? [`opening ${dangerous.join(',')} to the internet breaks the baseline (Tailscale-only); pass allowDangerous:true if you really mean it`] : undefined,
+                                verify: () => ufwStillReachable(ctx, h, openBefore.get(h.name) ?? []),
                             };
                         });
                     }),
@@ -463,6 +527,7 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                                 : held.length
                                   ? `apt-mark hold ${held.map((u) => q(u.name)).join(' ')} >/dev/null && { apt-get ${opts} ${args.distUpgrade ? 'dist-upgrade' : 'upgrade'}; rc=$?; apt-mark unhold ${held.map((u) => q(u.name)).join(' ')} >/dev/null; exit $rc; }`
                                   : `apt-get ${opts} ${args.distUpgrade ? 'dist-upgrade' : 'upgrade'}`;
+                            const noReboot = args.rebootIfRequired ? rebootBlocker(h) : undefined;
                             const step: HostStep = {
                                 host: h,
                                 action: `apt-get update && ${args.distUpgrade ? 'dist-upgrade' : `upgrade ${names.length}${args.securityOnly ? ' security' : ''} package(s)`}${args.rebootIfRequired ? ' (+ reboot if required)' : ''}`,
@@ -484,6 +549,7 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                                     return rebootAndWait(ctx, h, 1);
                                 },
                             };
+                            if (noReboot) step.blockers = [`${noReboot}; run without rebootIfRequired`];
                             if (!list.length && !args.distUpgrade) step.noop = held.length ? `only held-back packages pending (${held.map((x) => x.name).join(', ')})` : 'nothing to upgrade';
                             return step;
                         });
@@ -518,6 +584,7 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                                 preview: { uptime: f!.uptimeS ? `${Math.round(f!.uptimeS / 3600)}h` : undefined, rebootRequired: f!.rebootRequired, panel: u ? `${u.node} ${u.state}, ${u.users} online` : undefined },
                                 warnings: u?.users ? [`${u.users} user(s) on ${u.node} will be disconnected`] : undefined,
                                 verify: args.wait ? () => waitBack(ctx, h, args.delayMin) : undefined,
+                                blockers: rebootBlocker(h) ? [rebootBlocker(h)!] : undefined,
                             };
                         });
                     }),
@@ -540,8 +607,10 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                     runSteps(ctx, 'host_exec', args, { ...args, defaultBatch: 10 }, async () => {
                         const hosts = ctx.inventory().resolve(args.target);
                         const destructive = /\b(rm\s+-rf|mkfs|dd\s+if=|shutdown|reboot|poweroff|ufw\s+(disable|reset)|iptables\s+-F|userdel|passwd)\b/.test(args.command);
+                        const reboots = commandReboots(args.command);
                         return hosts.map((h) => ({
                             host: h,
+                            blockers: reboots && rebootBlocker(h) ? [rebootBlocker(h)!] : undefined,
                             action: args.command.length > 200 ? args.command.slice(0, 200) + '…' : args.command,
                             script: args.asUser ? `sudo -u ${q(h.user ?? 'root')} bash -c ${q(args.command)} 2>&1` : `${args.command}\n`,
                             timeoutMs: args.timeoutSec * 1000,
@@ -627,7 +696,7 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
 
         server.tool(
             'node_bootstrap',
-            'Turn a fresh Ubuntu server into a node with vps-edge-run.sh (github.com/akadorkin/remnanode-install-script): user + sudo, Tailscale (--ssh, exit node), Docker, hardening (ssh, fail2ban, UFW tailscale-only), tuning, node_exporter, geo updater, certbot certificate for the domain, remnanode with the panel\'s SECRET_KEY. That is only the start of the current baseline: afterwards ops-scripts fleet-node-seal.sh (ipset blocklists, MGMT-PORTS, node_exporter, beszel-agent, log-upload) — the node_add runbook (scenario_start) runs the whole sequence; fleet_audit shows what is missing. Runs detached on the server over its public IP (the firewall reset cuts public ssh); poll with job_status. The server reboots 3 min after success. Needs the domain\'s A record pointing at the server.',
+            'Turn a fresh Ubuntu server into a node with vps-edge-run.sh (your own copy deploy/vps-edge-run.sh from the ops checkout when there is one — no apt upgrade during install; else github.com/akadorkin/remnanode-install-script by URL): user + sudo, Tailscale (--ssh, exit node), Docker, hardening (ssh, fail2ban, UFW tailscale-only), tuning, node_exporter, geo updater, certbot certificate for the domain, remnanode with the panel\'s SECRET_KEY. That is only the start of the current baseline: afterwards ops-scripts fleet-node-seal.sh (ipset blocklists, MGMT-PORTS, node_exporter, beszel-agent, log-upload) — the node_add runbook (scenario_start) runs the whole sequence; fleet_audit shows what is missing. Runs detached on the server over its public IP (the firewall reset cuts public ssh); poll with job_status. The server reboots 3 min after success. Needs the domain\'s A record pointing at the server.',
             {
                 host: z.string().describe('inventory host (with bootstrap.address) or a new name'),
                 address: z.string().optional().describe('public IP / ssh target of the fresh server (default: bootstrap.address from the inventory)'),
@@ -639,6 +708,7 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                 hostname: z.string().optional(),
                 secretKey: z.string().optional().describe('remnanode SECRET_KEY; default: fetched from the panel (/api/keygen)'),
                 tailscaleAuthKey: z.string().optional().describe('tskey-auth-… to join the tailnet unattended; else the log shows a login URL to open'),
+                flags: z.array(z.string().regex(/^--[a-z][a-z-]*=[\w.:@/,+-]*$/, '--name=value')).default([]).describe('more flags for vps-edge-run.sh, e.g. --rugov=0 --reboot=0 --upgrade=skip --node-image=<digest>'),
                 ...applyParams,
             },
             (args) =>
@@ -663,8 +733,12 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                         // a stored TAILSCALE_AUTH_KEY expires quietly: mint a one-time key on apply when the API is there
                         let tsKey = args.tailscaleAuthKey;
                         if (!tsKey && ctx.config.tailscaleApi) {
-                            if (args.apply) tsKey = await tsCreateAuthKey(ctx.config.tailscaleApi, `mia bootstrap ${args.hostname ?? args.host}`);
-                            else warnings.push('joins the tailnet with a one-time key from the Tailscale API (made on apply)');
+                            // tag:edge: the tailnet ACL lets other machines into edge hosts only by tag
+                            if (args.apply) tsKey = await tsCreateAuthKey(ctx.config.tailscaleApi, `mia bootstrap ${args.hostname ?? args.host}`, ['tag:edge']);
+                            else warnings.push('joins the tailnet as tag:edge with a one-time key from the Tailscale API (made on apply)');
+                        } else if (!tsKey && process.env.TAILSCALE_AUTH_KEY) {
+                            tsKey = process.env.TAILSCALE_AUTH_KEY;
+                            warnings.push('no Tailscale API: joins with the stored TAILSCALE_AUTH_KEY — it may have expired');
                         }
                         if (args.remnanode && !secret) {
                             if (!ctx.panel) blockers.push('no secretKey given and the panel is not configured (REMNAWAVE_BASE_URL/REMNAWAVE_API_TOKEN)');
@@ -690,7 +764,9 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                             ...(domain && args.remnanode ? [`--domain=${domain}`] : []),
                             '--tailscale-only=1',
                             '--ports=skip',
+                            ...args.flags,
                         ];
+                        const edge = edgeScript(ctx.config);
                         const id = `bootstrap-${args.host}-${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${crypto.randomBytes(2).toString('hex')}`;
                         const log = `/var/log/mia-${id}.log`;
                         const rc = `/var/log/mia-${id}.rc`;
@@ -698,7 +774,8 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                         const runner = [
                             'set -e',
                             'umask 077',
-                            `curl -fsSL "$EDGE_URL" -o /root/vps-edge-run.sh`,
+                            // the fleet's own copy travels with the command; without it — the public script by URL
+                            edge.body ? `base64 -d > /root/vps-edge-run.sh <<'MIA_B64'\n${edge.body.toString('base64').replace(/(.{76})/g, '$1\n').trimEnd()}\nMIA_B64` : `curl -fsSL "$EDGE_URL" -o /root/vps-edge-run.sh`,
                             ...(tsKey
                                 ? ['command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh', `tailscale up --ssh --advertise-exit-node --authkey="$TS_AUTHKEY"${args.hostname ? ` --hostname=${q(args.hostname)}` : ''}`]
                                 : []),
@@ -718,8 +795,8 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                                 script: `${runner}\n${detached}\necho started ${id}`,
                                 env: { EDGE_URL: ctx.config.edgeScriptUrl, SECRET: secret ?? '', TS_AUTHKEY: tsKey ?? '' },
                                 timeoutMs: 300_000,
-                                preview: { ssh: `${args.sshUser}@${address}:${args.sshPort}`, os: reach.stdout.split('\n')[1], domain, dns: dnsInfo, script: ctx.config.edgeScriptUrl, log: '/var/log/mia-bootstrap-<host>-<time>.log' },
-                                fingerprint: [address, domain, dnsInfo, !!secret],
+                                preview: { ssh: `${args.sshUser}@${address}:${args.sshPort}`, os: reach.stdout.split('\n')[1], domain, dns: dnsInfo, script: edge.source, log: '/var/log/mia-bootstrap-<host>-<time>.log' },
+                                fingerprint: [address, domain, dnsInfo, !!secret, edge.source],
                                 warnings,
                                 blockers,
                                 verify: async (res) => {
@@ -733,6 +810,17 @@ export function registerActionTools(server: McpServer, ctx: Ctx) {
                 }),
         );
     });
+}
+
+/**
+ * The script node_bootstrap runs: your own copy from the ops checkout (deploy/vps-edge-run.sh — no apt
+ * upgrade during install) when there is one, else the public script by URL.
+ */
+export function edgeScript(config: Ctx['config']): { body?: Buffer; source: string } {
+    const file = config.repos.ops ? path.join(config.repos.ops, 'deploy', 'vps-edge-run.sh') : '';
+    if (!file || !fs.existsSync(file)) return { source: config.edgeScriptUrl };
+    const body = fs.readFileSync(file);
+    return { body, source: `${file} (sha256 ${crypto.createHash('sha256').update(body).digest('hex').slice(0, 12)})` };
 }
 
 /** After a reboot command: wait for ssh to drop and come back, then for remnanode (if any). */

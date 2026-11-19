@@ -33,6 +33,33 @@ export function repoState(root: string): { commit?: string; dirty?: string[]; er
     }
 }
 
+/** Fetch, fast-forward when the checkout is merely behind, then how many origin commits it still lacks (HEAD..@{u}): an old clone must not roll out over the fleet. No upstream → {}. */
+export function repoBehind(root: string): { behind?: number; fetchError?: string } {
+    let fetchError: string | undefined;
+    try {
+        execFileSync('git', ['-C', root, 'fetch', '-q'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+        fetchError = e instanceof Error ? e.message.split('\n')[0] : String(e);
+    }
+    try {
+        const count = () => Number(execFileSync('git', ['-C', root, 'rev-list', '--count', 'HEAD..@{u}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+        let behind = count();
+        if (behind > 0) {
+            // several sessions push to the fleet repos: a commit that lands in the middle of a runbook must not stop it
+            // Fast-forward only: a diverged or conflicting checkout stays a blocker.
+            try {
+                execFileSync('git', ['-C', root, 'merge', '--ff-only', '-q', '@{u}'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+                behind = count();
+            } catch {
+                /* not a fast-forward, or local changes in the way: reported as behind */
+            }
+        }
+        return { behind, ...(fetchError ? { fetchError } : {}) };
+    } catch {
+        return fetchError ? { fetchError } : {};
+    }
+}
+
 /** Remote bash that recreates the given repo files in a temp dir, runs the script from there, and removes the dir. */
 /** A script argument: plain text (quoted), or {env} — the value of an exported variable, so a secret never shows in the plan or journal. */
 export type RepoArg = string | { env: string };
@@ -67,7 +94,7 @@ export function registerRepoTools(server: McpServer, ctx: Ctx) {
     writeTools(() => {
         server.tool(
             'repo_script',
-            'Run one of your own fleet scripts from a local repo checkout (MIA_REPOS, e.g. ops=~/src/ops-scripts) on hosts: deploy/migrate-blacklist.sh, lock-mgmt-ports-apply.sh, install-beszel.sh … The script (plus files listed in `with`, same relative paths) is sent over ssh, run as root from a temp dir, then removed. Exactly the checked-out version runs: the plan shows the commit, uncommitted changes and a hash of the files. Secrets go by env var name (envFrom): the value is read from mia\'s own environment and never shown.',
+            'Run one of your own fleet scripts from a local repo checkout (MIA_REPOS, e.g. ops=~/src/ops-scripts) on hosts: deploy/migrate-blacklist.sh, lock-mgmt-ports-apply.sh, install-beszel.sh … The script (plus files listed in `with`, same relative paths) is sent over ssh, run as root from a temp dir, then removed. Exactly the checked-out version runs: the plan shows the commit, uncommitted changes and a hash of the files; a checkout behind its upstream is fast-forwarded first; one that cannot be (diverged, local changes in the way) is refused. Secrets go by env var name (envFrom): the value is read from mia\'s own environment and never shown.',
             {
                 target: z.string().min(1).describe(targetParam.description ?? 'hosts'),
                 repo: z.string().default('ops').describe('repo name from MIA_REPOS'),
@@ -93,7 +120,7 @@ export function registerRepoTools(server: McpServer, ctx: Ctx) {
                         const sha = crypto.createHash('sha256');
                         for (const f of files) sha.update(f.rel).update(f.body);
                         const filesHash = sha.digest('hex').slice(0, 12);
-                        const state = repoState(root);
+                        const state = { ...repoState(root), ...repoBehind(root) };
                         const missing = args.envFrom.filter((n) => !process.env[n]);
                         const env: Record<string, string> = { ...(args.env ?? {}) };
                         for (const n of args.envFrom) env[n] = process.env[n] ?? '';
@@ -101,7 +128,11 @@ export function registerRepoTools(server: McpServer, ctx: Ctx) {
                         const warnings: string[] = [];
                         if (DISRUPTIVE.test(text)) warnings.push('the script touches the firewall / ssh / docker / reboots: keep batch 1 and check the first host before the rest');
                         if (state.dirty?.some((d) => rels.includes(d))) warnings.push('runs uncommitted changes of the script (see repo.dirty)');
-                        const blockers = missing.length ? [`not set in mia's environment: ${missing.join(', ')}`] : undefined;
+                        if (state.fetchError) warnings.push(`git fetch failed, compared with the last fetched origin: ${state.fetchError}`);
+                        const blockers = [
+                            ...(missing.length ? [`not set in mia's environment: ${missing.join(', ')}`] : []),
+                            ...(state.behind ? [`${root} is ${state.behind} commit(s) behind its upstream: git pull first (an old copy would roll out)`] : []),
+                        ];
                         const hosts = ctx.inventory().resolve(args.target);
                         if (args.installOnly && !args.installTo) throw new Error('installOnly needs installTo');
                         const action = `${args.installTo ? `install ${args.repo}:${script} → ${args.installTo}${args.installOnly ? ' (not run)' : ', run it'}` : `${args.repo}:${script}`}${args.args.length ? ' ' + args.args.join(' ') : ''}`;
@@ -115,7 +146,7 @@ export function registerRepoTools(server: McpServer, ctx: Ctx) {
                                 preview: { repo: { path: root, ...state }, files: rels, filesHash, env: Object.keys(args.env ?? {}), envFrom: args.envFrom },
                                 fingerprint: [filesHash, Object.entries(env).map(([k, v]) => [k, crypto.createHash('sha256').update(v).digest('hex').slice(0, 8)])],
                                 warnings: warnings.length ? warnings : undefined,
-                                blockers,
+                                blockers: blockers.length ? blockers : undefined,
                             }),
                         );
                     }),

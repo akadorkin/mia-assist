@@ -28,7 +28,7 @@ export interface PanelBridge {
  */
 
 export type StepKind = 'check' | 'mia' | 'panel' | 'manual' | 'inventory' | 'local';
-export type Decision = 'apply' | 'done' | 'skip' | 'retry';
+export type Decision = 'apply' | 'done' | 'skip' | 'retry' | 'cancel';
 
 export interface RunVars {
     params: Record<string, any>;
@@ -72,6 +72,8 @@ export interface StepDef {
     gate?: boolean;
     /** Runs only when the gate with this id failed and was skipped (rollback). */
     onGateFail?: string;
+    /** Cannot be undone (a server deleted, a device removed): `auto` stops before it; with `confirm` the owner types the name. */
+    irreversible?: boolean;
 }
 
 export interface ScenarioDef {
@@ -85,9 +87,11 @@ export interface ScenarioDef {
 
 export interface StepLog {
     id: string;
-    status: 'applied' | 'passed' | 'done' | 'skipped' | 'n/a' | 'failed';
+    status: 'applied' | 'passed' | 'done' | 'skipped' | 'n/a' | 'failed' | 'cancelled';
     at: string;
     summary?: string;
+    /** Seconds the step itself took (plan + apply, or the check with its polling), without the wait for an answer. */
+    sec?: number;
 }
 
 export interface RunState {
@@ -97,7 +101,7 @@ export interface RunState {
     vars: Record<string, any>;
     index: number;
     log: StepLog[];
-    pending?: { stepId: string; planHash?: string; confirm?: string; preview?: unknown };
+    pending?: { stepId: string; planHash?: string; confirm?: string; preview?: unknown; prepMs?: number };
     createdAt: string;
     updatedAt: string;
     finished?: boolean;
@@ -117,6 +121,10 @@ export interface StepView {
     tool?: string;
     preview?: unknown;
     problem?: string;
+    /** Irreversible step: apply needs `confirm` = the name the owner typed (never filled in by the engine). */
+    needsConfirm?: boolean;
+    /** Cannot be undone: `auto` never applies it. */
+    irreversible?: boolean;
 }
 
 export interface Advance {
@@ -179,7 +187,10 @@ export class ScenarioEngine {
     private save(r: RunState) {
         fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
         r.updatedAt = new Date().toISOString();
-        fs.writeFileSync(path.join(this.dir, `${r.id}.json`), JSON.stringify(redact(r), null, 1), { mode: 0o600 });
+        const f = path.join(this.dir, `${r.id}.json`);
+        const tmp = `${f}.tmp-${process.pid}`; // обрыв посреди записи не должен портить файл прогона
+        fs.writeFileSync(tmp, JSON.stringify(redact(r), null, 1), { mode: 0o600 });
+        fs.renameSync(tmp, f);
     }
 
     load(id: string): RunState {
@@ -219,13 +230,14 @@ export class ScenarioEngine {
         // steps may depend on vars saved by the step before: rebuild the list every time
         for (; r.index < (steps = this.steps(r)).length; ) {
             const s = steps[r.index];
+            const t0 = Date.now();
             if ((r.vars.gateFailed ? s.onGateFail !== r.vars.gateFailed : !!s.onGateFail) || (s.when && !s.when(rv))) {
                 this.logStep(r, s, 'n/a');
                 passed.push({ id: s.id, title: s.title, status: 'n/a' });
                 r.index++;
                 continue;
             }
-            const view: StepView = { run: r.id, scenario: r.scenario, n: r.index + 1, total: steps.length, id: s.id, title: s.title, kind: s.kind, choices: [], ...(s.tool ? { tool: s.tool } : {}) };
+            const view: StepView = { run: r.id, scenario: r.scenario, n: r.index + 1, total: steps.length, id: s.id, title: s.title, kind: s.kind, choices: [], ...(s.tool ? { tool: s.tool } : {}), ...(s.irreversible ? { irreversible: true } : {}) };
             try {
                 if (s.kind === 'check') {
                     const until = Date.now() + (s.poll?.timeoutSec ?? 0) * 1000 * this.pollScale;
@@ -240,7 +252,7 @@ export class ScenarioEngine {
                     if (verdict === true) {
                         s.save?.(res.data, rv);
                         const summary = short(res.data);
-                        this.logStep(r, s, 'passed', summary);
+                        this.logStep(r, s, 'passed', summary, Date.now() - t0);
                         passed.push({ id: s.id, title: s.title, status: 'passed', summary });
                         r.index++;
                         continue;
@@ -260,6 +272,13 @@ export class ScenarioEngine {
                 } else if (s.kind === 'local') {
                     const files = s.files?.(rv, this.ctx) ?? [];
                     const cmds = s.commands?.(rv, this.ctx) ?? [];
+                    if (!files.length && !cmds.length) {
+                        // nothing to write and nothing to run (no repos configured, the directory is already gone)
+                        this.logStep(r, s, 'passed', 'делать нечего', Date.now() - t0);
+                        passed.push({ id: s.id, title: s.title, status: 'passed', summary: 'делать нечего' });
+                        r.index++;
+                        continue;
+                    }
                     view.preview = {
                         ...(files.length
                             ? {
@@ -280,13 +299,14 @@ export class ScenarioEngine {
                     const d = res.data as { mode?: string; planHash?: string; toRun?: number; blocked?: string[] };
                     if (d.toRun === 0 && !d.blocked?.length) {
                         // already in the wanted state on every host: nothing to confirm
-                        this.logStep(r, s, 'passed', 'уже сделано, менять нечего');
+                        this.logStep(r, s, 'passed', 'уже сделано, менять нечего', Date.now() - t0);
                         passed.push({ id: s.id, title: s.title, status: 'passed', summary: 'уже сделано, менять нечего' });
                         r.index++;
                         continue;
                     }
                     view.preview = res.data;
-                    r.pending = { stepId: s.id, planHash: d.planHash, preview: res.data };
+                    r.pending = { stepId: s.id, planHash: d.planHash, preview: res.data, ...(s.confirm ? { confirm: s.confirm(rv) } : {}) };
+                    if (s.confirm) view.needsConfirm = true;
                     if (d.blocked?.length) {
                         view.problem = `блокеры: ${d.blocked.join('; ')}`;
                         view.choices = ['retry', 'skip'];
@@ -302,13 +322,14 @@ export class ScenarioEngine {
                         if (!res.ok) throw new Error(res.text);
                         const d = res.data as { planHash?: string; blocked?: string[]; changed?: number };
                         if (protocol === 'plan' && d.changed === 0 && !d.blocked?.length) {
-                            this.logStep(r, s, 'passed', 'в панели уже так, менять нечего');
+                            this.logStep(r, s, 'passed', 'в панели уже так, менять нечего', Date.now() - t0);
                             passed.push({ id: s.id, title: s.title, status: 'passed', summary: 'в панели уже так, менять нечего' });
                             r.index++;
                             continue;
                         }
                         view.preview = res.data;
                         r.pending = { stepId: s.id, planHash: d.planHash, confirm: s.confirm?.(rv), preview: res.data };
+                        if (protocol === 'confirmName') view.needsConfirm = true;
                         if (d.blocked?.length) view.problem = `блокеры: ${d.blocked.join('; ')}`;
                     }
                     view.choices = view.problem ? ['retry', 'skip'] : ['apply', 'skip'];
@@ -317,6 +338,7 @@ export class ScenarioEngine {
                 view.problem = e instanceof Error ? e.message : String(e);
                 view.choices = ['retry', 'skip'];
             }
+            if (r.pending?.stepId === s.id) r.pending.prepMs = Date.now() - t0;
             this.save(r);
             return { passed, step: view };
         }
@@ -339,14 +361,74 @@ export class ScenarioEngine {
         return this.prepare(r);
     }
 
-    /** Take the owner's decision on the current step, then prepare the next one. */
-    async decide(id: string, decision: Decision): Promise<Advance> {
+    /** Take the owner's decision on the current step, then prepare the next one. One session at a time per run (lock file). */
+    async decide(id: string, decision: Decision, confirm?: string): Promise<Advance> {
+        const release = this.lock(id);
+        try {
+            return await this.decideLocked(id, decision, confirm);
+        } finally {
+            release();
+        }
+    }
+
+    /**
+     * Apply every reversible step in a row (the owner said yes to the whole run): stops at a failure, a blocker,
+     * a manual step, or an irreversible one — those still need the owner's word for that step.
+     */
+    async auto(id: string, from?: Advance): Promise<Advance> {
+        let cur = from ?? (await this.resume(id));
+        const passed = [...cur.passed];
+        let last = '';
+        let again = 0;
+        while (cur.step && cur.step.choices.includes('apply') && !cur.step.problem && !cur.step.irreversible && !cur.step.needsConfirm) {
+            again = cur.step.id === last ? again + 1 : 0;
+            if (again > 2) break; // the plan keeps changing under the apply: let a person look
+            last = cur.step.id;
+            cur = await this.decide(id, 'apply');
+            if (cur.outcome) passed.push({ id: cur.outcome.id, title: '', status: cur.outcome.status, summary: cur.outcome.summary });
+            passed.push(...cur.passed);
+            if (cur.outcome?.status === 'failed') break;
+        }
+        return { ...cur, passed };
+    }
+
+    /** <run>.lock with our pid: a second session (or a second call of this one) on the same run is refused; a dead owner's lock is taken over. */
+    private lock(id: string): () => void {
+        fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+        const f = path.join(this.dir, `${id}.lock`);
+        for (let i = 0; i < 2; i++) {
+            try {
+                fs.writeFileSync(f, String(process.pid), { flag: 'wx', mode: 0o600 });
+                return () => fs.rmSync(f, { force: true });
+            } catch (e) {
+                if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+            }
+            const pid = Number(fs.readFileSync(f, 'utf8'));
+            if (pidAlive(pid)) throw new Error(`прогон ${id} сейчас ведёт другая сессия (pid ${pid}): дождитесь её и ответьте retry`);
+            // rename забирает протухший замок атомарно: второй претендент получит ENOENT и пойдёт на новый круг
+            const stale = `${f}.stale-${process.pid}`;
+            try { fs.renameSync(f, stale); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; throw e; }
+            if (pidAlive(Number(fs.readFileSync(stale, 'utf8')))) { fs.renameSync(stale, f); throw new Error(`прогон ${id} сейчас ведёт другая сессия: дождитесь её и ответьте retry`); }
+            fs.rmSync(stale, { force: true });
+        }
+        throw new Error(`прогон ${id}: не удалось взять замок`);
+    }
+
+    private async decideLocked(id: string, decision: Decision, confirm?: string): Promise<Advance> {
         const r = this.load(id);
         if (r.finished) return { passed: [], finished: true, log: r.log };
         const steps = this.steps(r);
         const s = steps[r.index];
         const rv: RunVars = { params: r.params, vars: r.vars };
+        const t1 = Date.now();
         if (decision === 'retry') return this.prepare(r);
+        if (decision === 'cancel') { // брошенный прогон: закрыть без выполнения оставшихся шагов
+            if (s) this.logStep(r, s, 'cancelled');
+            r.finished = true;
+            r.pending = undefined;
+            this.save(r);
+            return { passed: [], finished: true, log: r.log };
+        }
         if (decision === 'skip') {
             if (s.gate) r.vars.gateFailed = s.id; // ворота пропускают только проваленными: дальше лишь откат (AUD-16)
             this.logStep(r, s, 'skipped');
@@ -368,6 +450,9 @@ export class ScenarioEngine {
         if (!r.pending || r.pending.stepId !== s.id) return this.prepare(r);
         // fleet.yaml or the files changed while the owner read the diff: show the new one instead of applying it unseen
         if ((s.kind === 'inventory' || s.kind === 'local') && r.pending.planHash !== this.shownHash(s, rv)) return this.prepare(r);
+        // необратимое (nodes_delete): имя вводит владелец, движок его не подставляет
+        if (((s.kind === 'panel' && s.protocol === 'confirmName') || (s.kind === 'mia' && s.confirm)) && (confirm === undefined || confirm !== r.pending.confirm))
+            throw new Error(`шаг «${s.id}» необратим: apply только с confirm — именем из плана, которое владелец ввёл сам${confirm === undefined ? '' : ` («${confirm}» не совпало)`}`);
 
         let result: unknown;
         let ok = true;
@@ -425,8 +510,9 @@ export class ScenarioEngine {
             }
         }
         this.ctx.state.log({ tool: `scenario:${r.scenario}`, host: String(r.params.host ?? r.params.name ?? r.params.node ?? '-'), action: `${s.id}: ${s.title}`, ok, result: summary });
+        const ms = (r.pending.prepMs ?? 0) + Date.now() - t1;
         if (!ok) {
-            this.logStep(r, s, 'failed', summary);
+            this.logStep(r, s, 'failed', summary, ms);
             this.save(r);
             return {
                 passed: [],
@@ -434,7 +520,7 @@ export class ScenarioEngine {
                 step: { run: r.id, scenario: r.scenario, n: r.index + 1, total: steps.length, id: s.id, title: s.title, kind: s.kind, choices: ['retry', 'skip'], problem: summary, preview: result },
             };
         }
-        this.logStep(r, s, 'applied', summary);
+        this.logStep(r, s, 'applied', summary, ms);
         r.index++;
         r.pending = undefined;
         this.save(r); // before prepare(): its waits can take minutes, a restart then must not offer the applied step again
@@ -442,8 +528,8 @@ export class ScenarioEngine {
         return { ...next, outcome: { id: s.id, status: 'applied', summary, result } };
     }
 
-    private logStep(r: RunState, s: StepDef, status: StepLog['status'], summary?: string) {
-        r.log.push({ id: s.id, status, at: new Date().toISOString(), ...(summary ? { summary: summary.slice(0, 300) } : {}) });
+    private logStep(r: RunState, s: StepDef, status: StepLog['status'], summary?: string, ms?: number) {
+        r.log.push({ id: s.id, status, at: new Date().toISOString(), ...(summary ? { summary: summary.slice(0, 300) } : {}), ...(ms !== undefined ? { sec: Math.round(ms / 100) / 10 } : {}) });
     }
 
     private async callTool(s: StepDef, args: Record<string, unknown>, panel: boolean): Promise<{ ok: boolean; data: unknown; text: string }> {
@@ -489,6 +575,16 @@ export class ScenarioEngine {
             this.ctx.inventory(); // reload, validates the result
         }
         return { before, after, summary };
+    }
+}
+
+function pidAlive(pid: number): boolean {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        return (e as NodeJS.ErrnoException).code === 'EPERM';
     }
 }
 

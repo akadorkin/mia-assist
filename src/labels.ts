@@ -1,4 +1,4 @@
-/** Russian words of mia for people: tool titles, parameter hints, search words (console and web). */
+/** Russian words of mia for people: tool titles, parameter hints, search words (console). */
 
 /** Russian names of the tools, as the menu shows them. */
 export const TITLES: Record<string, string> = {
@@ -54,11 +54,16 @@ export const TITLES: Record<string, string> = {
     tdarr_pause: 'Tdarr: пауза / продолжить',
     dns_records: 'DNS-записи в Cloudflare (по имени или по IP)',
     dns_change: 'DNS: создать / перевести / удалить A-записи',
+    hetzner_server: 'Сервер Hetzner по имени',
+    hetzner_server_create: 'Купить сервер Hetzner (перебор типов и локаций)',
+    hetzner_server_delete: 'Удалить сервер Hetzner (необратимо)',
+    hetzner_snapshot_create: 'Снимок сервера Hetzner',
     gitea_runners: 'Раннеры Gitea (в сети, метки)',
     gitea_runner_register: 'Зарегистрировать раннер Gitea на ноде',
     gitea_runner_remove: 'Удалить раннер в Gitea',
     beszel_systems: 'Карточки Beszel',
     beszel_system_edit: 'Beszel: переименовать или удалить карточку',
+    beszel_system_add: 'Beszel: завести карточку машины и её токен агента',
     host_file_edit: 'Правка списка на сервере: добавить / заменить / убрать запись (Prometheus, log-collector …)',
     scenario_list: 'Ранбуки и их прогоны (для Claude; в консоли — «Перенос и ранбуки»)',
     scenario_start: 'Запустить ранбук (для Claude)',
@@ -145,6 +150,9 @@ export const KEYWORDS: Record<string, string> = {
     fleet_status: 'статус состояние status',
     fleet_audit: 'аудит проверка безопасность audit',
     dns_change: 'днс dns cloudflare запись домен',
+    hetzner_server: 'hetzner хецнер сервер',
+    hetzner_server_create: 'hetzner хецнер купить создать сервер',
+    hetzner_server_delete: 'hetzner хецнер удалить сервер',
     dns_records: 'днс dns cloudflare записи домены',
     host_exec: 'команда выполнить shell bash ssh',
     disk_cleanup: 'диск место почистить clean',

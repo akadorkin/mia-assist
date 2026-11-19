@@ -112,22 +112,29 @@ export function isPersonalDevice(p: Pick<TailscalePeer, 'os'>): boolean {
  */
 export async function tailscalePeers(config: Config): Promise<TailscalePeer[]> {
     if (config.tailscaleApi) {
-        const me = os.hostname().toLowerCase().split('.')[0];
-        return (await tsDevices(config.tailscaleApi)).map((d) => ({
-            hostName: d.hostname,
-            dnsName: (d.name ?? '').replace(/\.$/, ''),
-            ips: d.addresses ?? [],
-            online: d.connectedToControl ?? (d.lastSeen ? Date.now() - Date.parse(d.lastSeen) < 5 * 60_000 : false),
-            lastSeen: d.lastSeen,
-            os: d.os,
-            self: d.hostname.toLowerCase().split('.')[0] === me || undefined,
-            id: d.id,
-            keyDaysLeft: keyDaysLeft(d),
-            updateAvailable: d.updateAvailable,
-            clientVersion: d.clientVersion?.split('-')[0],
-            tags: d.tags,
-            user: d.user,
-        }));
+        // the API is the fuller source (ids, key expiry); when it is unreachable this machine's own `tailscale status`
+        // still knows names and addresses — a flaky uplink once made a runbook say «not in the tailnet»
+        try {
+            const me = os.hostname().toLowerCase().split('.')[0];
+            return (await tsDevices(config.tailscaleApi)).map((d) => ({
+                hostName: d.hostname,
+                dnsName: (d.name ?? '').replace(/\.$/, ''),
+                ips: d.addresses ?? [],
+                online: d.connectedToControl ?? (d.lastSeen ? Date.now() - Date.parse(d.lastSeen) < 5 * 60_000 : false),
+                lastSeen: d.lastSeen,
+                os: d.os,
+                self: d.hostname.toLowerCase().split('.')[0] === me || undefined,
+                id: d.id,
+                keyDaysLeft: keyDaysLeft(d),
+                updateAvailable: d.updateAvailable,
+                clientVersion: d.clientVersion?.split('-')[0],
+                tags: d.tags,
+                user: d.user,
+            }));
+    
+        } catch {
+            /* fall through to the local status */
+        }
     }
     const json = await new Promise<string>((resolve, reject) => {
         const child = spawn(config.tailscaleBin, ['status', '--json'], { stdio: ['ignore', 'pipe', 'pipe'] });

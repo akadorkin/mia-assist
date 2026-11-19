@@ -15,7 +15,7 @@ export interface AppHandle {
     app: AppName;
     spec: AppSpec;
     url: string;
-    /** Header carrying the key ("X-Emby-Token: …"), or '' when the app needs none. */
+    /** Header carrying the key ('Authorization: MediaBrowser Token=\"…\"', curl-config escaped), or '' when the app needs none. */
     authHeader: string;
 }
 
@@ -35,7 +35,8 @@ export function appOf(host: Host, app: AppName): AppHandle {
         throw new Error(`host ${host.name} has no ${app} in the inventory (apps.${app}); ${have.length ? `it has: ${have.join(', ')}` : 'add it under hosts.' + host.name + '.apps'}`);
     }
     const key = resolveKey(spec.apiKey, `${host.name} ${app}`);
-    const header = !key ? '' : app === 'jellyfin' ? `X-Emby-Token: ${key}` : `x-api-key: ${key}`;
+    // Jellyfin 10.11+/12 with EnableLegacyAuthorization=false rejects X-Emby-Token; \" — the value goes into curl's quoted `header = "…"`
+    const header = !key ? '' : app === 'jellyfin' ? `Authorization: MediaBrowser Token=\\"${key}\\"` : `x-api-key: ${key}`;
     return { host, app, spec, url: (spec.url ?? DEFAULT_URL[app]).replace(/\/+$/, ''), authHeader: header };
 }
 

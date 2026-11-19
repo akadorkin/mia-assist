@@ -136,6 +136,12 @@ test('engine: checks pass by themselves, changes wait for a decision, state surv
     assert.equal(adv.step?.id, 'hands');
     assert.equal(adv.step?.preview, 'do 3 things');
     await assert.rejects(eng.decide(run, "apply"), /руками/);
+    // cancel closes an abandoned run: nothing applied, step logged as cancelled
+    const other = (await eng.start('demo', { host: 'pl2' })).step!.run;
+    const cancelled = await eng.decide(other, 'cancel');
+    assert.equal(cancelled.finished, true);
+    assert.equal(cancelled.log?.at(-1)?.status, 'cancelled');
+    assert.equal(applied, 1, 'cancel runs nothing');
     adv = await eng.decide(run, 'done');
     assert.equal(adv.step?.id, 'panel');
     assert.equal((adv.step?.preview as { changed: number }).changed, 2);
@@ -144,7 +150,18 @@ test('engine: checks pass by themselves, changes wait for a decision, state surv
     assert.deepEqual(calls.at(-2), ['hosts_bulk_edit', { filter: { node: 'x' }, apply: true, planHash: 'p1' }]);
     assert.equal(adv.step?.id, 'del');
     assert.deepEqual(calls.at(-1), ['nodes_delete', { node: 'x' }], 'destructive: preview without confirmName');
-    adv = await eng.decide(run, 'apply');
+    assert.equal(adv.step?.needsConfirm, true);
+    // irreversible: the engine never fills the name in — apply needs the owner's typed confirm
+    await assert.rejects(eng.decide(run, 'apply'), /необратим/);
+    await assert.rejects(eng.decide(run, 'apply', 'node-y'), /не совпало/);
+    assert.ok(!calls.some(([, a]) => (a as { confirmName?: string }).confirmName), 'nothing deleted without the typed name');
+    // a second session holds the run: refused; a dead session's lock is taken over
+    const lock = path.join(ctx.config.stateDir, 'scenarios', `${run}.lock`);
+    fs.writeFileSync(lock, String(process.pid));
+    await assert.rejects(eng.decide(run, 'apply', 'node-x'), /другая сессия/);
+    fs.writeFileSync(lock, '2147483646');
+    adv = await eng.decide(run, 'apply', 'node-x');
+    assert.ok(!fs.existsSync(lock), 'lock released after the step');
     assert.deepEqual(calls.at(-1), ['nodes_delete', { node: 'x', confirmName: 'node-x' }]);
     assert.deepEqual(
         adv.passed.map((p) => [p.id, p.status]),
@@ -360,4 +377,14 @@ test('a failed gate cannot be skipped past: only its rollback runs, then the run
     assert.equal(a.step!.id, 'drop-old');
     ({ seen, adv } = await walkAll(eng, await eng.start('g', {})));
     assert.deepEqual(seen, ['move', 'drop-old'], 'a passing gate: no rollback, the run goes on');
+});
+
+test('scenario lock: a dead owner is taken over, a live one refused', () => {
+    const eng = new ScenarioEngine({ config: { stateDir: os.tmpdir() } } as unknown as Ctx, new Map()) as unknown as { dir: string; lock(id: string): () => void };
+    eng.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mia-lock-'));
+    fs.writeFileSync(path.join(eng.dir, 'r.lock'), '999999999');
+    eng.lock('r')();
+    fs.writeFileSync(path.join(eng.dir, 'r.lock'), String(process.pid));
+    assert.throws(() => eng.lock('r'), /другая сессия/);
+    assert.equal(fs.readFileSync(path.join(eng.dir, 'r.lock'), 'utf8'), String(process.pid));
 });

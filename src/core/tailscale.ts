@@ -46,9 +46,9 @@ export async function tsDeleteDevice(api: NonNullable<Config['tailscaleApi']>, i
  * A one-time, preauthorized auth key that lives an hour: what a server needs to join the tailnet once.
  * A stored reusable TAILSCALE_AUTH_KEY expires quietly, a fresh key never does.
  */
-export async function tsCreateAuthKey(api: NonNullable<Config['tailscaleApi']>, description: string): Promise<string> {
+export async function tsCreateAuthKey(api: NonNullable<Config['tailscaleApi']>, description: string, tags?: string[]): Promise<string> {
     const r = await call<{ key?: string }>(api.key, 'POST', `${BASE}/tailnet/${encodeURIComponent(api.tailnet)}/keys`, {
-        capabilities: { devices: { create: { reusable: false, ephemeral: false, preauthorized: true } } },
+        capabilities: { devices: { create: { reusable: false, ephemeral: false, preauthorized: true, ...(tags?.length ? { tags } : {}) } } },
         expirySeconds: 3600,
         description: description.replace(/[^\w .-]/g, '-').slice(0, 50),
     });

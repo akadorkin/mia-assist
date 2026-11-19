@@ -47,6 +47,7 @@ export const SECRETS: SecretSpec[] = [
     { group: 'tailscale', name: 'TAILSCALE_TAILNET', secret: false, optional: true, about: 'имя tailnet; по умолчанию «-» — tailnet ключа', usedFor: 'Tailscale API' },
     { group: 'tailscale', name: 'TAILSCALE_AUTH_KEY', secret: true, about: 'tskey-auth-… (многоразовый, pre-approved)', usedFor: 'новые ноды входят в tailnet без ссылки для входа', validate: prefix('tskey-auth-', 'ключ входа') },
     { group: 'cloudflare', name: 'CLOUDFLARE_API_TOKEN', secret: true, about: 'токен с Zone:DNS:Edit (+ Zone:Read) на зоны флота', usedFor: 'DNS-записи: новые ноды, перенос ингресса, вывод' },
+    { group: 'hetzner', name: 'HETZNER_API_TOKEN', secret: true, optional: true, about: 'токен проекта Hetzner Cloud (чтение и запись)', usedFor: 'покупка сервера для новой ноды и удаление выведенной' },
     { group: 'gitea', name: 'GITEA_URL', secret: false, about: 'адрес Gitea, доступный с этой машины', usedFor: 'раннеры', validate: url },
     { group: 'gitea', name: 'GITEA_TOKEN', secret: true, about: 'токен доступа Gitea (админ, для раннеров)', usedFor: 'регистрация, список и удаление раннеров' },
     { group: 'beszel', name: 'BESZEL_URL', secret: false, about: 'адрес хаба Beszel', usedFor: 'карточки мониторинга', validate: url },

@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { Ctx } from '../core/ctx.js';
@@ -15,6 +17,26 @@ export const MANIFEST = `for p in "$@"; do
   elif [ -d "$p" ]; then printf 'D\\t%s\\t%s\\t%s\\n' "$p" "$(find "$p" -type f | wc -l)" "$(cd "$p" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum | sha256sum | cut -c1-16)"
   else printf 'M\\t%s\\t-\\t-\\n' "$p"; fi
 done`;
+
+/**
+ * Payload of a copy kept on this machine, keyed by the source host, the paths and their content hashes: the next copy
+ * of the same files (the same binaries for every new node) skips the read from the source — once the template
+ * node was reachable only through a DERP relay and 60 MB took up to two minutes. Only big payloads are kept
+ * (small ones are quick and are usually secrets); files older than 30 days are dropped.
+ */
+export async function cachedPayload(stateDir: string, key: unknown, read: () => Promise<string>, minChars = 1_000_000): Promise<string> {
+    const dir = path.join(stateDir, 'copy-cache');
+    const file = path.join(dir, `${crypto.createHash('sha256').update(JSON.stringify(key)).digest('hex').slice(0, 24)}.b64`);
+    if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8');
+    const payload = await read();
+    if (payload.length >= minChars) {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        for (const f of fs.readdirSync(dir)) if (Date.now() - (fs.statSync(path.join(dir, f), { throwIfNoEntry: false })?.mtimeMs ?? Date.now()) > 30 * 864e5) fs.rmSync(path.join(dir, f), { force: true });
+        fs.writeFileSync(`${file}.tmp-${process.pid}`, payload, { mode: 0o600 });
+        fs.renameSync(`${file}.tmp-${process.pid}`, file);
+    }
+    return payload;
+}
 
 export interface ManifestRow {
     kind: 'file' | 'dir' | 'missing';
@@ -49,7 +71,7 @@ export function registerCopyTools(server: McpServer, ctx: Ctx) {
     writeTools(() => {
         server.tool(
             'host_copy',
-            'Copy files or directories from one host to others through this machine (certificates, /opt/remnanode/docker-compose.yml with the node key, /etc/log-upload/secrets.env, haproxy.cfg …): what the owner did by hand when moving an ingress or cloning a node. Contents are never shown: the plan lists size and sha256 on the source and on each target. Existing target paths are archived to /root/mia-backup-<time>.tgz first. For one env-style file, `set` changes KEY=value lines on the way (e.g. LOG_NODE_NAME).',
+            'Copy files or directories from one host to others through this machine (certificates, /opt/remnanode/docker-compose.yml with the node key, /etc/log-upload/secrets.env, haproxy.cfg …): what the owner did by hand when moving an ingress or cloning a node. Contents are never shown: the plan lists size and sha256 on the source and on each target. Existing target paths are archived to /root/mia-backup-<time>.tgz first. For one env-style file, `set` changes KEY=value lines on the way (e.g. LOG_NODE_NAME). Big payloads (binaries) are cached on this machine by content hash of the source, so the same files are read from the source once.',
             {
                 from: z.string().describe('source host (inventory)'),
                 target: z.string().min(1).describe(`destination hosts: ${targetParam.description ?? ''}`),
@@ -84,9 +106,11 @@ export function registerCopyTools(server: McpServer, ctx: Ctx) {
                                 unpack = `mkdir -p ${q(args.paths[0].replace(/\/[^/]*$/, '') || '/')}\nbase64 -d > ${q(args.paths[0])}.mia-new <<'MIA_B64'\n${payload.replace(/(.{76})/g, '$1\n')}\nMIA_B64\nmv -f ${q(args.paths[0])}.mia-new ${q(args.paths[0])}`;
                             } else {
                                 const rel = args.paths.map((p) => p.replace(/^\/+/, ''));
-                                const r = await ctx.transport.exec(src, `tar -C / -czf - ${rel.map(q).join(' ')} | base64 -w0`, { timeoutMs: 300_000 });
-                                if (!r.ok) throw new Error(`${src.name}: tar: ${r.error}`);
-                                payload = r.stdout.trim();
+                                payload = await cachedPayload(ctx.config.stateDir, [src.name, source.map((x) => [x.path, x.kind, x.sha])], async () => {
+                                    const r = await ctx.transport.exec(src, `tar -C / -czf - ${rel.map(q).join(' ')} | base64 -w0`, { timeoutMs: 300_000 });
+                                    if (!r.ok) throw new Error(`${src.name}: tar: ${r.error}`);
+                                    return r.stdout.trim();
+                                });
                                 unpack = `base64 -d <<'MIA_B64' | tar -C / -xzpf -\n${payload.replace(/(.{76})/g, '$1\n')}\nMIA_B64`;
                             }
                             if (payload.length * 0.75 > MAX_BYTES) blockers.push(`too big to copy through this machine (${Math.round((payload.length * 0.75) / 1e6)} MB > 12 MB)`);

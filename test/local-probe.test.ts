@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { test } from 'node:test';
 import { loadConfig } from '../src/config.js';
 import { Inventory } from '../src/core/inventory.js';
@@ -16,7 +17,8 @@ test('probe.sh runs locally and parses', { skip: process.platform !== 'linux' },
     assert.ok(f.kernel && f.os && f.cpus && f.cpus > 0);
     assert.ok(f.mem && f.mem.totalMiB > 0);
     assert.ok(f.disks.length > 0);
-    assert.ok(f.packages && Object.keys(f.packages).length > 10, 'dpkg packages listed');
+    // the fleet is Debian/Ubuntu; mia itself may run on another distro (nas: openSUSE) where there is no dpkg to list
+    if (fs.existsSync('/usr/bin/dpkg-query')) assert.ok(f.packages && Object.keys(f.packages).length > 10, 'dpkg packages listed');
     assert.ok(f.files && Object.keys(f.files).some((p) => p.startsWith('/etc/')), 'tracked files read');
     assert.ok(f.services.some((s) => s.name === 'remnanode'), 'inventory services probed');
 });

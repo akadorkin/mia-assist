@@ -6,7 +6,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { stringify } from 'yaml';
 import { loadConfig } from '../src/config.js';
-import { parseHttp, resolveKey, toContainerPath, toHostPath } from '../src/core/apps.js';
+import { appOf, parseHttp, resolveKey, toContainerPath, toHostPath } from '../src/core/apps.js';
 import { createServer } from '../src/server.js';
 import { registry } from '../src/tools/helpers.js';
 import { cloneTdarrLibrary } from '../src/tools/media.js';
@@ -32,6 +32,12 @@ test('curl output parsing', () => {
     assert.deepEqual(parseHttp('{"a":1}\n200'), { status: 200, body: { a: 1 }, raw: '{"a":1}' });
     assert.deepEqual(parseHttp('\n204\n'), { status: 204, body: '', raw: '' });
     assert.equal(parseHttp('curl: (7) Failed to connect\n000').status, 0);
+});
+
+test('jellyfin key goes in Authorization: MediaBrowser (legacy X-Emby-Token is off in 10.11+), quotes escaped for curl config', () => {
+    const host = { name: 'h', apps: { jellyfin: { apiKey: 'abc123' }, tdarr: { apiKey: 'k' } } } as any;
+    assert.equal(appOf(host, 'jellyfin').authHeader, 'Authorization: MediaBrowser Token=\\"abc123\\"');
+    assert.equal(appOf(host, 'tdarr').authHeader, 'x-api-key: k');
 });
 
 test('API keys: env: indirection, unsafe characters rejected', () => {
@@ -102,7 +108,7 @@ before(async () => {
             const u = req.url!;
             // Jellyfin
             if (u.startsWith('/jf/')) {
-                if (req.headers['x-emby-token'] !== 'jfkey') return json(401, { message: 'Unauthorized' });
+                if (req.headers.authorization !== 'MediaBrowser Token="jfkey"') return json(401, { message: 'Unauthorized' });
                 if (u === '/jf/Library/VirtualFolders') return json(200, jfFolders());
                 if (u.startsWith('/jf/Library/VirtualFolders/Paths')) return json(204);
                 if (u.startsWith('/jf/Library/VirtualFolders?')) return json(204);
@@ -162,7 +168,7 @@ test('jellyfin_library_add_path: dry run sends nothing, apply posts exactly the 
     const post = seen.find((r) => r.method === 'POST')!;
     assert.equal(post.url, '/jf/Library/VirtualFolders/Paths?refreshLibrary=true');
     assert.deepEqual(JSON.parse(post.body), { Name: 'Clips', PathInfo: { Path: folder } });
-    assert.equal(post.headers['x-emby-token'], 'jfkey');
+    assert.equal(post.headers.authorization, 'MediaBrowser Token="jfkey"');
 });
 
 test('jellyfin_library_add_path: missing folder and duplicates are caught before anything is sent', async () => {

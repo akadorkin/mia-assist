@@ -28,6 +28,8 @@ export interface ExecOptions {
     noSudo?: boolean;
     /** Override the ssh target (e.g. the public IP of a fresh server in node_bootstrap). */
     via?: { address: string; user?: string; port?: number; identityFile?: string };
+    /** A brand-new connection (no shared ControlMaster socket): proves a new login still works after a firewall change. */
+    fresh?: boolean;
 }
 
 const MAX_CAPTURE = 16 * 1024 * 1024;
@@ -55,7 +57,7 @@ const PROLOGUE = [
 export class Transport {
     constructor(private config: Config) {}
 
-    sshArgs(host: Host, via?: ExecOptions['via']): string[] {
+    sshArgs(host: Host, via?: ExecOptions['via'], fresh = false): string[] {
         const address = via?.address ?? host.address;
         const user = via ? (via.user ?? 'root') : host.user;
         const port = via ? via.port : host.port;
@@ -77,7 +79,8 @@ export class Transport {
         if (via?.identityFile) args.push('-i', via.identityFile.replace(/^~(?=\/)/, os.homedir()), '-o', 'IdentitiesOnly=yes');
         if (user) args.push('-l', user);
         // one connection per host for a while: the plan, the apply and the logs after it skip the handshake
-        if (this.config.sshReuse && this.controlDir()) args.push('-o', 'ControlMaster=auto', '-o', `ControlPath=${this.controlDir()}/%C`, '-o', 'ControlPersist=120');
+        if (fresh) args.push('-o', 'ControlMaster=no', '-o', 'ControlPath=none');
+        else if (this.config.sshReuse && this.controlDir()) args.push('-o', 'ControlMaster=auto', '-o', `ControlPath=${this.controlDir()}/%C`, '-o', 'ControlPersist=120');
         args.push(...this.config.sshOptions, address);
         return args;
     }
@@ -121,7 +124,7 @@ export class Transport {
             args = sudo ? ['-n', 'bash', '-s'] : ['-s'];
         } else {
             cmd = this.config.sshBin;
-            args = [...this.sshArgs(host, opts.via), remote];
+            args = [...this.sshArgs(host, opts.via, opts.fresh), remote];
         }
         report({ kind: 'host', host: host.name, state: 'run' });
         const res = await this.spawn(host.name, cmd, args, body, opts.timeoutMs ?? this.config.commandTimeoutMs, host.transport === 'local' && !opts.via);

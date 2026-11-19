@@ -113,6 +113,7 @@ def sources():
 
 
 changes, keep, rotate, skipped = [], [], set(), []
+runas = set()  # who the jobs run as: /var/lib/mia-cron needs 1777 only for non-root jobs
 edits = {}  # source → new text
 for kind, name, text in sources():
     raw = open(name, errors="replace").read() if kind == "file" else text
@@ -128,6 +129,7 @@ for kind, name, text in sources():
         if not sp:
             continue
         sched, user, cmd = sp
+        runas.add(user if with_user else name)
         n += 1
         if name == "/etc/crontab" and re.search(r"run-parts|anacron|cron\.(hourly|daily|weekly|monthly)", cmd):
             continue
@@ -179,6 +181,7 @@ result = {
     "keep": keep,
     "skipped": skipped,
     "wrapper": {"path": WRAP, "install": (open(WRAP).read() if os.path.exists(WRAP) else "") != WRAPPER},
+    "stateDirMode": "1777" if runas - {"root"} else "0755",
     "rotation": {"new": own, "add": extra, "alreadyRotated": {p: c for p, c in covered.items() if c}, "rewrite": cur_rot != rot_text and bool(own or extra)},
 }
 
@@ -187,7 +190,8 @@ if MODE == "apply":
     os.makedirs(LOGDIR, mode=0o755, exist_ok=True)
     # the wrapper and its state dir go first: a rewritten line must never point at a missing wrapper
     os.makedirs(STATEDIR, exist_ok=True)
-    os.chmod(STATEDIR, 0o1777)  # personal crontabs run as their user: sticky like /tmp
+    # jobs of other users write their own marks: sticky like /tmp; root-only hosts keep 0755 (a fake mark is a fake success)
+    os.chmod(STATEDIR, 0o1777 if result["stateDirMode"] == "1777" else 0o755)
     if result["wrapper"]["install"]:
         with open(WRAP + ".tmp", "w") as fh:
             fh.write(WRAPPER)

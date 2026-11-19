@@ -1,10 +1,64 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { applyParams, runApiSteps, runSteps } from '../core/plan.js';
 import { Ctx } from '../core/ctx.js';
 import { isPersonalDevice, matchNode, matchPeer, nodeState, tailscalePeers } from '../core/panel.js';
 import { tsCreateAuthKey, tsDeleteDevice } from '../core/tailscale.js';
+import { PanelBridge } from '../core/scenario.js';
 import { run, writeTools } from './helpers.js';
+
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Live (non-comment) lines of local repo checkouts that name the node (whole words: node-a1 is not node-a12). */
+export function repoRefs(dirs: Record<string, string>, needles: string[]): Record<string, string[]> {
+    const out: Record<string, string[]> = {};
+    const words = needles.filter((n) => n && n.length > 3);
+    if (!words.length) return out;
+    for (const [name, dir] of Object.entries(dirs)) {
+        if (!fs.existsSync(dir)) continue;
+        let raw = '';
+        try {
+            raw = execFileSync('git', ['-C', dir, 'grep', '-n', '-I', '-w', '-E', words.map(esc).join('|')], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+        } catch {
+            continue; // git grep exits 1 when nothing matches
+        }
+        const live = raw.split('\n').filter((l) => {
+            const text = l.replace(/^[^:]+:\d+:/, '').trim();
+            return l && !text.startsWith('#') && !text.startsWith('//');
+        });
+        if (live.length) out[name] = live.slice(0, 200).map((l) => l.slice(0, 220));
+    }
+    return out;
+}
+
+/**
+ * Who still uses a tailnet device by its name or 100.x address: enabled panel nodes (a node node_remove disabled
+ * does not count), the panel config (config_search over profiles, templates, hosts) and live lines of haproxy-configs.
+ * What could not be checked is listed apart.
+ */
+export async function tailnetUsers(ctx: Ctx, bridge: PanelBridge | undefined, dev: { dnsName: string; ips: string[] }): Promise<{ users: string[]; unchecked: string[] }> {
+    const fqdn = dev.dnsName.replace(/\.$/, '');
+    const short = fqdn.split('.')[0];
+    const ip = dev.ips.find((i) => i.includes('.'));
+    const names = [fqdn, short, ip].filter((x): x is string => !!x);
+    const users: string[] = [];
+    const unchecked: string[] = [];
+    const nodes = await ctx.panelNodes(true);
+    if (!nodes) unchecked.push(`panel nodes (${ctx.panelError ?? 'no panel key'})`);
+    else for (const n of nodes) if (!n.isDisabled && (names.includes(n.address.toLowerCase()) || n.address.toLowerCase().startsWith(`${short}.`))) users.push(`panel node ${n.name} (${n.address}:${n.port ?? '?'})`);
+    if (!bridge) unchecked.push('panel config (config_search needs MIA_REMNAWAVE_MCP)');
+    else {
+        const res = await bridge.call('config_search', { query: `\\b(?:${names.map(esc).join('|')})\\b`, regex: true, in: ['profiles', 'templates', 'hosts'], limit: 50 });
+        if (!res.ok) unchecked.push(`panel config (config_search: ${res.text.slice(0, 200)})`);
+        else for (const w of new Set(((res.data as { hits?: Array<{ in: string }> })?.hits ?? []).map((h) => h.in))) users.push(`panel ${w}`);
+    }
+    const dir = ctx.config.repos.haproxy;
+    if (!dir) unchecked.push('haproxy-configs (MIA_REPOS has no haproxy)');
+    else for (const l of repoRefs({ haproxy: dir }, names).haproxy ?? []) users.push(`haproxy-configs ${l}`);
+    return { users, unchecked };
+}
 
 const ago = (iso?: string) => {
     if (!iso) return undefined;
@@ -12,7 +66,7 @@ const ago = (iso?: string) => {
     return m < 2 ? 'now' : m < 120 ? `${m}m` : m < 48 * 60 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`;
 };
 
-export function registerTailnetTools(server: McpServer, ctx: Ctx) {
+export function registerTailnetTools(server: McpServer, ctx: Ctx, bridge?: PanelBridge) {
     server.tool(
         'tailnet_devices',
         'Every device of the tailnet (Tailscale API with TAILSCALE_API_KEY, else this machine\'s `tailscale status`): online / last seen, OS and client version, update available, node key expiry, tags — and which inventory host and panel node it is.',
@@ -62,7 +116,7 @@ export function registerTailnetTools(server: McpServer, ctx: Ctx) {
     writeTools(() => {
         server.tool(
             'tailnet_device_remove',
-            'Remove a machine from the tailnet (Tailscale API, needs TAILSCALE_API_KEY): the last step of taking a server out of service. The dry run shows the device, when it was last seen and whether it is still in fleet.yaml; an online device or one still in the inventory is refused unless force.',
+            'Remove a machine from the tailnet (Tailscale API, needs TAILSCALE_API_KEY): the last step of taking a server out of service. The dry run shows the device, when it was last seen and whether it is still in fleet.yaml; an online device or one still in the inventory is refused unless force. A device whose name or 100.x address is still used — an enabled panel node address, anything config_search finds in the panel, a live line of haproxy-configs — is refused even with force.',
             {
                 device: z.string().describe('MagicDNS name (node-pl2), full name or hostname'),
                 force: z.boolean().default(false).describe('remove even if it is online or still an enabled inventory host'),
@@ -84,6 +138,9 @@ export function registerTailnetTools(server: McpServer, ctx: Ctx) {
                         if (!args.force && p.online) blockers.push('the device is online — take it out of service first, or force');
                         if (!args.force && h && !h.disabled) blockers.push(`still an enabled inventory host (${h.name}) — disable/remove it in fleet.yaml first (fleet_host_edit), or force`);
                         if (p.self) blockers.push('this is the machine mia runs on');
+                        // потребители адреса — блокер и при force: force снимает только «в сети» и «в инвентаре»
+                        const used = await tailnetUsers(ctx, bridge, p);
+                        for (const u of used.users) blockers.push(`still used: ${u}`);
                         return [
                             {
                                 target: `tailnet ${p.dnsName}`,
@@ -91,6 +148,7 @@ export function registerTailnetTools(server: McpServer, ctx: Ctx) {
                                 // lastSeen of an online device moves every few seconds — keeping it would change planHash between dry-run and apply
                                 before: { online: p.online, lastSeen: p.online ? undefined : p.lastSeen, os: p.os, ip: p.ips[0], inventory: h ? `${h.name}${h.disabled ? ' (disabled)' : ''}` : 'not in fleet.yaml' },
                                 blockers,
+                                warnings: used.unchecked.length ? used.unchecked.map((u) => `not checked: ${u}`) : undefined,
                                 apply: () => tsDeleteDevice(api, p.id!),
                                 verify: async () => ((await tailscalePeers(ctx.config)).some((x) => x.id === p.id) ? 'still listed' : true),
                             },

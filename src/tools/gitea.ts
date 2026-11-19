@@ -13,10 +13,16 @@ function gitea(ctx: Ctx) {
     return ctx.config.gitea;
 }
 
-/** Remote tail that shows whether the runner runs and which labels it registered with. */
+/** Remote tail that shows whether the runner runs and which labels it registered with. Must end with status 0: it runs under the runner script's `set -eo pipefail` (a missing candidate file failed a good registration). */
 const RUNNER_CHECK = `echo '--- mia: runner'
 systemctl is-active act_runner 2>&1 | head -n 1
-for f in /etc/act_runner/.runner /var/lib/act_runner/.runner /opt/act_runner/.runner /home/*/.runner; do [ -f "$f" ] && grep -oE '"[a-z0-9.-]+:(host|docker[^"]*)"' "$f"; done 2>/dev/null | sort -u`;
+for f in /etc/act_runner/.runner /var/lib/act_runner/.runner /opt/act_runner/.runner /home/*/.runner; do if [ -f "$f" ]; then grep -oE '"[a-z0-9.-]+:(host|docker[^"]*)"' "$f" || true; fi; done 2>/dev/null | sort -u`;
+
+/** With SEED_FROM: binary and config are already on the node (copied from that runner) — bootstrap-node-runner.sh takes them as ACT_RUNNER_SOURCE_HOST=local. */
+const SEED = `if [ -n "$SEED_FROM" ] && [ -x /usr/local/bin/act_runner ] && [ -f /etc/act_runner/config.yaml ]; then
+  sed "s/$SEED_FROM:host/local:host/g" /etc/act_runner/config.yaml > /etc/act_runner/config.yaml.seed
+  export ACT_RUNNER_SOURCE_HOST=local
+fi`;
 
 export function registerGiteaTools(server: McpServer, ctx: Ctx) {
     server.tool(
@@ -65,6 +71,7 @@ export function registerGiteaTools(server: McpServer, ctx: Ctx) {
                 name: z.string().optional().describe('name for the script (default: the inventory name, e.g. pl3 → label node-pl3:host)'),
                 repo: z.string().default('ops'),
                 script: z.string().default('deploy/bootstrap-node-runner.sh'),
+                seedFrom: z.string().regex(/^[a-z0-9-]+$/).optional().describe('the node already has /usr/local/bin/act_runner and /etc/act_runner/config.yaml copied from this runner (e.g. node-pl2): use them instead of the script\'s scp from another node — a fresh node may not ssh to its neighbours (tailnet ACL)'),
                 ...applyParams,
             },
             (args) =>
@@ -84,8 +91,9 @@ export function registerGiteaTools(server: McpServer, ctx: Ctx) {
                             {
                                 host: h,
                                 action: `${args.repo}:${rel} ${name} $RUNNER_TOKEN → label ${label}`,
-                                script: `${repoRunner([{ rel, body }], rel, [name, { env: 'RUNNER_TOKEN' }])}\n${RUNNER_CHECK}`,
-                                env: { RUNNER_TOKEN: token },
+                                // the copied config announces the template's label: the script turns «local:host» of the seed into this node's
+                                script: `${SEED}\n${repoRunner([{ rel, body }], rel, [name, { env: 'RUNNER_TOKEN' }])}\n${RUNNER_CHECK}`,
+                                env: { RUNNER_TOKEN: token, SEED_FROM: args.seedFrom ?? '' },
                                 timeoutMs: 600_000,
                                 preview: { repo: { path: root, ...repoState(root) }, label, alreadyInGitea: existing.map((r) => `${r.name} (${r.status}) ${r.labels.join(',')}`) },
                                 warnings: existing.length ? ['a runner with this name/label is already registered: the old one should be removed (gitea_runner_remove)'] : undefined,

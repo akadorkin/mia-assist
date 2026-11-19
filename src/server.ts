@@ -17,6 +17,7 @@ import { registerRepoTools } from './tools/repo.js';
 import { registerScenarioTools } from './tools/scenarios.js';
 import { registerTailnetTools } from './tools/tailnet.js';
 import { registerDnsTools } from './tools/dns.js';
+import { registerHetznerTools } from './tools/hetzner.js';
 import { registerGiteaTools } from './tools/gitea.js';
 import { registerBeszelTools } from './tools/beszel.js';
 import { registerFileEditTools } from './tools/fileedit.js';
@@ -38,7 +39,7 @@ export function createServer(config: Config, transport?: Transport): { server: M
                 'Every tool that changes a host is two-step: call without apply → exact plan per host + planHash; repeat with apply:true and planHash. Disruptive actions (restarts, reboots, upgrades, firewall) roll one host at a time and verify it came back; cheap ones (host_exec, disk_cleanup, cert_renew, geo/blacklist/updates policy) default to 10 at a time — pass batch:1 to go slower. Everything run is journaled (journal_list).',
                 'fleet_snapshot + fleet_changes keep a history of what changed on each host, including changes made by hand.',
                 'The panel itself (users, hosts, profiles, inbounds) is managed by the remnawave MCP server; here the panel is read only to match hosts to nodes.',
-                'Whole operations (xray rule changes across profiles, rolling OS updates) are runbooks: scenario_list → scenario_start → scenario_step. Each changing step is shown as a dry run first; answer apply only after the owner said yes to that step.',
+                'Whole operations (xray rule changes across profiles, rolling OS updates) are runbooks: scenario_list → scenario_start → scenario_step. Each changing step is shown as a dry run first; answer apply only after the owner said yes to that step — or, when the owner approved the whole run, auto applies every reversible step in a row and stops at a failure or an irreversible step.',
                 'Home services: host_services_discover lists what runs on a host; Jellyfin and Tdarr have their own tools (jellyfin_*, tdarr_*) when the host has apps.jellyfin / apps.tdarr. Folders can be given as host paths: they are mapped into the app container.',
             ].join('\n'),
         },
@@ -55,13 +56,14 @@ export function createServer(config: Config, transport?: Transport): { server: M
     registerMediaTools(server, ctx);
     registerRepoTools(server, ctx);
     registerCopyTools(server, ctx);
-    registerTailnetTools(server, ctx);
+    const bridge = RemnawaveBridge.from(config.remnawaveMcp);
+    registerTailnetTools(server, ctx, bridge);
     registerDnsTools(server, ctx);
+    registerHetznerTools(server, ctx);
     registerGiteaTools(server, ctx);
     registerBeszelTools(server, ctx);
     registerFileEditTools(server, ctx);
     registerInventoryTools(server, ctx);
-    const bridge = RemnawaveBridge.from(config.remnawaveMcp);
     const engine = new ScenarioEngine(ctx, SCENARIOS, bridge);
     registerScenarioTools(server, ctx, engine);
     registerAllPrompts(server);

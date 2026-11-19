@@ -6,7 +6,7 @@ export default defineConfig({
     target: 'node22',
     outDir: 'dist',
     clean: true,
-    onSuccess: 'mkdir -p dist/scripts dist/web && cp src/scripts/*.sh src/scripts/*.py dist/scripts/ && cp src/web/page.html dist/web/',
+    onSuccess: 'mkdir -p dist/scripts && cp src/scripts/*.sh src/scripts/*.py dist/scripts/',
     splitting: false,
     sourcemap: true,
     dts: false,
