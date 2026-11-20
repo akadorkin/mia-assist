@@ -108,7 +108,12 @@ export function audit(host: Host, f: HostFacts, panelNode?: PanelNode | null): F
                     if (exposed.length) add('crit', 'fw.public_mgmt', `служебный порт открыт наружу: ${exposed.join(', ')} (ALLOW ${r.to}${r.v6 ? ' (v6)' : ''} from ${r.from})`);
                 } else for (const b of bad) extra.add(b);
             }
-            if (extra.size) add('info', 'fw.public_port', `открыты наружу сверх policy.publicPorts и инбаундов панели: ${[...extra].join(', ')}`);
+            // ufw allows nobody listens on are leftovers (removed inbounds): one line with ranges, the rest — unknown services
+            const heard = (s: string) => f.listen.some((l) => `${l.port}/${l.proto.replace(/6$/, '')}` === s);
+            const idle = [...extra].filter((s) => !heard(s));
+            const live = [...extra].filter((s) => heard(s));
+            if (live.length) add('info', 'fw.public_port', `открыты наружу сверх policy.publicPorts и инбаундов панели, слушает служба: ${live.join(', ')}`);
+            if (idle.length) add('info', 'fw.stale_allow', `ufw открыт, но никто не слушает (хвосты удалённых инбаундов?) — ${idle.length}: ${portRanges(idle)}`);
             if (!f.ufw.rules.some((r) => r.iface === 'tailscale0' && /ALLOW IN/.test(r.action))) add('warn', 'fw.tailscale', 'в ufw нет ALLOW IN на tailscale0: SSH/API через Tailscale может резаться');
         }
 
@@ -280,6 +285,21 @@ export function publicAllows(rules: UfwRule[]): UfwRule[] {
 }
 
 /** "443" → 443/tcp + 443/udp; "80/tcp" stays; "Anywhere" → any. */
+/** ["31000/tcp","31001/tcp","31001/udp","587/tcp"] → "587/tcp, 31000-31001/tcp, 31001/udp". */
+export function portRanges(specs: string[]): string {
+    const out: string[] = [];
+    for (const proto of ['tcp', 'udp']) {
+        const ns = [...new Set(specs.filter((s) => s.endsWith(`/${proto}`)).map((s) => Number(s.split('/')[0])))].sort((a, b) => a - b);
+        for (let i = 0; i < ns.length; ) {
+            let j = i;
+            while (j + 1 < ns.length && ns[j + 1] === ns[j] + 1) j++;
+            out.push(`${ns[i] === ns[j] ? ns[i] : `${ns[i]}-${ns[j]}`}/${proto}`);
+            i = j + 1;
+        }
+    }
+    return out.join(', ');
+}
+
 /** Ports of the inbounds the panel binds to this node (configProfile.activeInbounds). */
 export function inboundPorts(n?: PanelNode | null): (number | string)[] {
     return (n?.configProfile?.activeInbounds ?? []).flatMap((i) => (i.port === undefined || i.port === null ? [] : [i.port]));

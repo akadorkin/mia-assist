@@ -23,6 +23,7 @@ export const CODE_RU: Record<string, string> = {
     'fw.default_in': 'входящие разрешены по умолчанию',
     'fw.public_mgmt': 'служебный порт открыт в ufw',
     'fw.public_port': 'открыты порты сверх политики и инбаундов панели',
+    'fw.stale_allow': 'ufw открыт, но порт никто не слушает',
     'fw.tailscale': 'ufw не пускает tailscale0',
     'ts.down': 'Tailscale не работает',
     'ssh.password': 'ssh пускает по паролю',

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { audit, expandPort, publicAllows, statusRow } from '../src/core/audit.js';
+import { audit, expandPort, publicAllows, statusRow, portRanges } from '../src/core/audit.js';
 import { Inventory } from '../src/core/inventory.js';
 import { parseListen, parseProbe, parseUfw } from '../src/core/probe.js';
 import { UFW_BASELINE, execOk, healthyNodeRecords, probeOutput } from './fixtures.js';
@@ -72,11 +72,14 @@ test('firewall: public management ports are crit, other public ports only listed
     assert.ok(!c.includes('crit:fw.public_mgmt'));
     assert.ok(codes({ ufw: extra, mgmt_list: '2222 9100' }).includes('crit:fw.public_mgmt'), 'a port MGMT-PORTS does not guard is exposed');
     assert.ok(codes({ ufw: extra, mgmt_jump: '0' }).includes('crit:fw.public_mgmt'), 'a chain INPUT never jumps to guards nothing');
-    assert.ok(c.includes('info:fw.public_port'));
+    assert.ok(c.includes('info:fw.stale_allow'), 'allowed 8443 nobody listens on is a leftover');
+    const heard = codes({ ufw: extra, listen: healthyNodeRecords().listen + '\ntcp LISTEN 0 4096 0.0.0.0:8443 0.0.0.0:* users:(("xray",pid=7,fd=3))' });
+    assert.ok(heard.includes('info:fw.public_port') && !heard.includes('info:fw.stale_allow'), 'a service listens on 8443');
     assert.ok(!c.includes('warn:fw.public_port'));
     // the node's inbound ports from the panel are open by design
     const node = { uuid: 'u', name: 'nl1', address: 'nl1.example.com', configProfile: { activeInbounds: [{ tag: 'vless-8443', port: 8443, security: 'reality' }] } };
-    assert.ok(!audit(nl, facts({ ufw: extra }), node).some((x) => x.code === 'fw.public_port'), 'inbound 8443 is not extra');
+    assert.ok(!audit(nl, facts({ ufw: extra }), node).some((x) => x.code === 'fw.public_port' || x.code === 'fw.stale_allow'), 'inbound 8443 is not extra');
+    assert.equal(portRanges(['31000/tcp', '31001/tcp', '31002/tcp', '587/tcp', '31001/udp']), '587/tcp, 31000-31002/tcp, 31001/udp');
 
     const off = codes({ ufw: 'Status: inactive' });
     assert.ok(off.includes('crit:fw.inactive'));
