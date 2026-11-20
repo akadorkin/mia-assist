@@ -19,6 +19,7 @@ export interface PanelNode {
     versions?: { xray?: string; node?: string } | null;
     countryCode?: string;
     tags?: string[];
+    configProfile?: { activeConfigProfileUuid?: string; activeInbounds?: { tag?: string; port?: number | string | null; security?: string | null }[] } | null;
 }
 
 /**

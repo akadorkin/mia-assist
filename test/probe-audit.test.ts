@@ -68,12 +68,15 @@ test('firewall: public management ports are crit, other public ports only listed
         '8443/tcp on eth0           ALLOW IN    Anywhere',
     );
     const c = codes({ ufw: extra });
-    assert.ok(c.includes('info:fw.mgmt_guarded'), 'MGMT-PORTS in front of ufw lets only the tailnet and home reach 22');
+    assert.ok(!c.some((x) => x.includes('fw.mgmt_')), 'MGMT-PORTS in front of ufw: guarded 22 is by design, not a finding');
     assert.ok(!c.includes('crit:fw.public_mgmt'));
     assert.ok(codes({ ufw: extra, mgmt_list: '2222 9100' }).includes('crit:fw.public_mgmt'), 'a port MGMT-PORTS does not guard is exposed');
     assert.ok(codes({ ufw: extra, mgmt_jump: '0' }).includes('crit:fw.public_mgmt'), 'a chain INPUT never jumps to guards nothing');
     assert.ok(c.includes('info:fw.public_port'));
     assert.ok(!c.includes('warn:fw.public_port'));
+    // the node's inbound ports from the panel are open by design
+    const node = { uuid: 'u', name: 'nl1', address: 'nl1.example.com', configProfile: { activeInbounds: [{ tag: 'vless-8443', port: 8443, security: 'reality' }] } };
+    assert.ok(!audit(nl, facts({ ufw: extra }), node).some((x) => x.code === 'fw.public_port'), 'inbound 8443 is not extra');
 
     const off = codes({ ufw: 'Status: inactive' });
     assert.ok(off.includes('crit:fw.inactive'));
@@ -109,7 +112,9 @@ test('remnanode failures', () => {
     assert.ok(codes({ certs: `remnanode\t${1_790_000_000 + 5 * 86400}\tCN = nl1\tDNS:nl1.example.com` }).includes('crit:cert.expiring'));
     assert.ok(codes({ certs: `remnanode\t${1_790_000_000 + 15 * 86400}\tCN = nl1\tDNS:nl1.example.com` }).includes('warn:cert.expiring'));
     assert.ok(codes({ certs: `remnanode\t${1_790_000_000 + 60 * 86400}\tCN = x\tDNS:other.example.com` }).includes('warn:cert.domain'));
-    assert.ok(codes({ certs: '' }).includes('info:cert.missing'), 'REALITY-only nodes may have no certificate');
+    assert.ok(!codes({ certs: '' }).includes('info:cert.missing'), 'REALITY-only (or unknown) nodes need no certificate');
+    const tls = { uuid: 'u', name: 'nl1', address: 'nl1.example.com', configProfile: { activeInbounds: [{ port: 1444, security: 'tls' }] } };
+    assert.ok(audit(nl, facts({ certs: '' }), tls).some((x) => x.code === 'cert.missing'), 'a TLS inbound needs a certificate');
     const oldGeo = `/opt/remnanode/roscomvpn-geoip.dat ${1_790_000_000 - 5 * 86400} 1`;
     assert.ok(codes({ geo_files: oldGeo }).includes('warn:geo.stale'));
     // the updater leaves unchanged files alone: its last successful run is what counts
@@ -178,7 +183,7 @@ test('firewall as the fleet runs it (2026-10-01): internal interfaces, ADMIN-POR
     // ingress: every public port allowed by design; management ports guarded by MGMT-PORTS → informational
     const ingress = withLine('Anywhere on eth0           ALLOW IN    Anywhere');
     const c = codes({ ufw: ingress });
-    assert.ok((c.includes('info:fw.mgmt_guarded') || c.includes('info:fw.mgmt_idle')) && !c.includes('crit:fw.public_mgmt'), 'nothing management-ish listens unguarded');
+    assert.ok(!c.some((x) => x.includes('fw.mgmt_') || x.includes('fw.public_mgmt')), 'nothing management-ish listens unguarded: no finding at all');
     // …but a management port that listens publicly and no chain guards is exposure
     const listen = healthyNodeRecords().listen + '\ntcp LISTEN 0 4096 0.0.0.0:5201 0.0.0.0:* users:(("iperf3",pid=9,fd=3))';
     const open = audit(nl, facts({ ufw: ingress, listen })).find((f) => f.code === 'fw.public_mgmt');

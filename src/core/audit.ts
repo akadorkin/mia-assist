@@ -83,6 +83,8 @@ export function audit(host: Host, f: HostFacts, panelNode?: PanelNode | null): F
             }
             if (f.ufw.defaultIn && !/deny|reject/.test(f.ufw.defaultIn)) add('crit', 'fw.default_in', `входящие по умолчанию: ${f.ufw.defaultIn}`);
             const pub = publicAllows(f.ufw.rules);
+            // inbound ports of the node's panel profile are open by design (they differ per node): not findings
+            const inbound = new Set(inboundPorts(panelNode).flatMap((x) => expandPort(String(x))));
             const extra = new Set<string>();
             const guardSet = new Set<number>([
                 ...(f.mgmt.rules && f.mgmt.jumps ? (f.mgmt.list ?? []).map((x) => Number(x.split('/')[0])) : []),
@@ -93,7 +95,7 @@ export function audit(host: Host, f: HostFacts, panelNode?: PanelNode | null): F
                 [...new Set(f.listen.filter((l) => ports.includes(l.port) && isWildcardOrPublic(l.addr) && !guardSet.has(l.port)).map((l) => `${l.port}/${l.proto}${l.process ? `(${l.process})` : ''}`))];
             for (const r of pub) {
                 const specs = expandPort(r.port);
-                const bad = specs.filter((s) => !p.publicPorts.includes(s));
+                const bad = specs.filter((s) => !p.publicPorts.includes(s) && !inbound.has(s));
                 if (!bad.length) continue;
                 const mgmt = bad.some((s) => s === 'any' || portHits(s, p.mgmtPorts));
                 // MGMT-PORTS / ADMIN-PORTS sit in front of ufw and let only the tailnet and home in: a ufw allow of a
@@ -101,14 +103,12 @@ export function audit(host: Host, f: HostFacts, panelNode?: PanelNode | null): F
                 // design) is exposure only for management ports that actually listen publicly and are not guarded.
                 const hit = p.mgmtPorts.filter((x) => bad.some((s) => s === 'any' || portHits(s, [x])));
                 const exposed = exposedMgmt(hit);
-                const allGuarded = hit.every((x) => guardSet.has(x));
-                if (mgmt && exposed.length) add('crit', 'fw.public_mgmt', `служебный порт открыт наружу: ${exposed.join(', ')} (ALLOW ${r.to}${r.v6 ? ' (v6)' : ''} from ${r.from})`);
-                else if (mgmt && allGuarded) add('info', 'fw.mgmt_guarded', `ufw пускает ${r.to}${r.v6 ? ' (v6)' : ''} отовсюду, но служебные порты прикрыты MGMT-PORTS/ADMIN-PORTS (только tailnet и дом)`);
-                else if (mgmt) add('info', 'fw.mgmt_idle', `ufw пускает ${r.to}${r.v6 ? ' (v6)' : ''} отовсюду; служебные порты наружу не слушают`);
-                else for (const b of bad) extra.add(b);
+                // guarded or not listening publicly is fine by design: only real exposure is reported (owner 20.11)
+                if (mgmt) {
+                    if (exposed.length) add('crit', 'fw.public_mgmt', `служебный порт открыт наружу: ${exposed.join(', ')} (ALLOW ${r.to}${r.v6 ? ' (v6)' : ''} from ${r.from})`);
+                } else for (const b of bad) extra.add(b);
             }
-            // inbound ports differ per node (443, 1443-4444, 5443/5444, 9443/9444 …): listed, not alarmed
-            if (extra.size) add('info', 'fw.public_port', `открыты наружу сверх policy.publicPorts: ${[...extra].join(', ')}`);
+            if (extra.size) add('info', 'fw.public_port', `открыты наружу сверх policy.publicPorts и инбаундов панели: ${[...extra].join(', ')}`);
             if (!f.ufw.rules.some((r) => r.iface === 'tailscale0' && /ALLOW IN/.test(r.action))) add('warn', 'fw.tailscale', 'в ufw нет ALLOW IN на tailscale0: SSH/API через Tailscale может резаться');
         }
 
@@ -176,8 +176,10 @@ export function audit(host: Host, f: HostFacts, panelNode?: PanelNode | null): F
         }
 
         const cert = pickCert(host, f);
-        if (!cert) add('info', 'cert.missing', 'нет сертификата в /opt/certbot/certs/live (для нод только с REALITY это нормально)');
-        else if (cert.daysLeft !== undefined) {
+        // REALITY-only nodes need no certificate; without panel data (no tls inbound known) stay quiet too
+        const needsCert = (panelNode?.configProfile?.activeInbounds ?? []).some((i) => i.security === 'tls');
+        if (!cert && needsCert) add('info', 'cert.missing', 'нет сертификата в /opt/certbot/certs/live, а у ноды в панели есть TLS-инбаунды');
+        else if (cert?.daysLeft !== undefined) {
             if (cert.daysLeft <= p.certCritDays) add('crit', 'cert.expiring', `сертификат истекает через ${cert.daysLeft} дн.`);
             else if (cert.daysLeft <= p.certWarnDays) add('warn', 'cert.expiring', `сертификат истекает через ${cert.daysLeft} дн.`);
             if (host.domain && cert.sans.length && !cert.sans.includes(host.domain)) add('warn', 'cert.domain', `сертификат на ${cert.sans.join(', ')}, а домен хоста ${host.domain}`);
@@ -278,6 +280,11 @@ export function publicAllows(rules: UfwRule[]): UfwRule[] {
 }
 
 /** "443" → 443/tcp + 443/udp; "80/tcp" stays; "Anywhere" → any. */
+/** Ports of the inbounds the panel binds to this node (configProfile.activeInbounds). */
+export function inboundPorts(n?: PanelNode | null): (number | string)[] {
+    return (n?.configProfile?.activeInbounds ?? []).flatMap((i) => (i.port === undefined || i.port === null ? [] : [i.port]));
+}
+
 export function expandPort(spec: string): string[] {
     if (spec === 'Anywhere') return ['any'];
     if (/\/(tcp|udp)$/.test(spec)) return [spec];
